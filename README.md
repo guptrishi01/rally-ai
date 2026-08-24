@@ -111,4 +111,4 @@ court-iq/
 
 ## License
 
-MIT
+GPL-3.0
