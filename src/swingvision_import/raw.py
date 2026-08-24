@@ -89,7 +89,7 @@ class RawPointRow:
             normalized.
         winner: Raw point-winner label from the export, not yet normalized.
         end_type: Raw point-outcome label from the export, not yet mapped
-            onto Court IQ's canonical set. Column is confirmed to be
+            onto RallyAI's canonical set. Column is confirmed to be
             "Detail" (not "Shot Type"), but its value vocabulary is still
             unverified — no Pro export has been seen to check against.
         first_serve_in: Whether the first serve landed in, or None if the

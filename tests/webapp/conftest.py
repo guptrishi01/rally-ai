@@ -51,7 +51,7 @@ def xlsx_bytes() -> bytes:
 
 @pytest.fixture
 def import_config(tmp_path: Path) -> ImportConfig:
-    return ImportConfig(pending_dir=tmp_path / "pending", db_path=tmp_path / "court_iq.db")
+    return ImportConfig(pending_dir=tmp_path / "pending", db_path=tmp_path / "rallyai.db")
 
 
 @pytest.fixture

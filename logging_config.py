@@ -1,4 +1,4 @@
-"""Shared logging setup for Court IQ's future entry points (CLI, scripts).
+"""Shared logging setup for RallyAI's future entry points (CLI, scripts).
 
 Library modules only ever call `logging.getLogger(__name__)` per CLAUDE.md's
 per-module logging convention and never configure handlers themselves -

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Project-specific context for Court IQ. See [README.md](README.md) for the product overview and [docs/stat-definitions.md](docs/stat-definitions.md) for stat calculations.
+Project-specific context for RallyAI. See [README.md](README.md) for the product overview and [docs/stat-definitions.md](docs/stat-definitions.md) for stat calculations.
 
 ## Data capture: SwingVision
 
@@ -119,7 +119,7 @@ Backend: SQL database (SQLite) for storage, Python for stat aggregation, the Swi
 
 **Given a second look, not adopted for now** (flagged here rather than silently dropped, in case a future feature changes this):
 
-- **Sparse matrix handling** — Court IQ's data is small and dense (per-point flags, per-match stats), not high-dimensional/sparse. No current feature needs it; revisit only if something like large-scale cross-match feature vectors gets built.
+- **Sparse matrix handling** — RallyAI's data is small and dense (per-point flags, per-match stats), not high-dimensional/sparse. No current feature needs it; revisit only if something like large-scale cross-match feature vectors gets built.
 
 ## Versioning & README updates
 

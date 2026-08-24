@@ -1,4 +1,4 @@
-"""Maps raw SwingVision rows onto Court IQ's MatchRecord staging schema."""
+"""Maps raw SwingVision rows onto RallyAI's MatchRecord staging schema."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _END_TYPE_ALIASES: dict[str, str] = {
 
 
 def _canonical_end_type(raw_end_type: str) -> str:
-    """Maps a raw SwingVision point-outcome label onto Court IQ's canonical set.
+    """Maps a raw SwingVision point-outcome label onto RallyAI's canonical set.
 
     Args:
         raw_end_type: The raw label from the export (e.g. "Unforced Error").

@@ -123,5 +123,5 @@ def synthetic_non_pro_xlsx(tmp_path: Path) -> Path:
 def import_config(tmp_path: Path) -> ImportConfig:
     return ImportConfig(
         pending_dir=tmp_path / "pending",
-        db_path=tmp_path / "court_iq.db",
+        db_path=tmp_path / "rallyai.db",
     )

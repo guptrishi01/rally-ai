@@ -1,0 +1,16 @@
+# Normalize line endings on checkin, let Git decide checkout behavior per-OS.
+* text=auto eol=lf
+
+# Explicit language hints so GitHub Linguist keeps classifying these as
+# real source (Python/Jinja), never vendored or documentation.
+*.py linguist-detectable=true
+*.jinja linguist-language=Jinja linguist-detectable=true
+*.sql linguist-detectable=true
+
+# Binary/data files - avoid line-ending mangling and text diffing.
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.xlsx binary
+*.mp4 binary
+*.mov binary

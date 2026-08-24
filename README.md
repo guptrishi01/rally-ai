@@ -1,12 +1,12 @@
-# Court IQ — AI Tennis Coach 🎾
+# RallyAI — AI Tennis Coach 🎾
 
 An AI-powered tennis coaching tool that analyzes your match data to help you improve. Log point-by-point statistics from recorded match footage, reflect on what went right and wrong, and let generative AI turn that data into actionable coaching — strategies to implement, weaknesses to address, and exercises to improve your game.
 
 ## Overview
 
-The goal of Court IQ is simple: **use AI to become a better tennis player.**
+The goal of RallyAI is simple: **use AI to become a better tennis player.**
 
-After each match, you review your recorded footage, log detailed point-by-point data, and write down your pros (what went well) and cons (what needs work). Court IQ feeds all of this — your raw statistics and your own self-assessment — into a generative AI coach that provides:
+After each match, you review your recorded footage, log detailed point-by-point data, and write down your pros (what went well) and cons (what needs work). RallyAI feeds all of this — your raw statistics and your own self-assessment — into a generative AI coach that provides:
 
 - **Strategic recommendations** — What tactical adjustments to make based on patterns in your data (e.g. "your first serve win % drops in third sets — conserve energy on second serve points early")
 - **Improvement plans** — Specific areas to focus on in practice, prioritized by impact on your results
@@ -16,11 +16,11 @@ The AI coaching gets smarter over time as you log more matches — it can spot t
 
 ### How It Works
 
-1. **Record** your match using [SwingVision](https://swing.vision/) on a phone fence mount — get verbal consent from the other player first, since the camera captures both sides of the court. A Pro subscription isn't required: shot-level AI tracking is free-tier, and Court IQ reconstructs point-by-point data from it when SwingVision's own point/game/set rollup (Pro-only) isn't available
+1. **Record** your match using [SwingVision](https://swing.vision/) on a phone fence mount — get verbal consent from the other player first, since the camera captures both sides of the court. A Pro subscription isn't required: shot-level AI tracking is free-tier, and RallyAI reconstructs point-by-point data from it when SwingVision's own point/game/set rollup (Pro-only) isn't available
 2. **Stage the match** through the web app's Input tab (`webapp/`, or the `scripts/import_match.py` CLI) — upload the `.xlsx` export and any match video, fill in date/opponent/result, energy/mental ratings, and pros/cons. Submitting doesn't navigate away or block — you can switch to the Results tab immediately. If the recording was interrupted and split into multiple exports, they're merged into one continuous match rather than staged as separate, incorrectly-scored pieces. The match is staged as JSON, never written straight to the database
-3. **Review** the staged match: confirm or correct every auto-scored point outcome (winner/unforced-error/forced-error calls, and — for reconstructed matches — every point, since it's a heuristic Court IQ derived from raw shot data, not SwingVision's own classification) and tag anything SwingVision doesn't capture at all, like net approaches. Optional Claude-assisted suggestions can help (never auto-resolving), structured-data quality checks flag things worth a second look (a reconstructed score that doesn't match SwingVision's own summary, a serve-order mismatch, recording gaps), and you can write your own plain-language notes per point for Claude to translate into the right fields — still a separate, explicit step before anything is actually applied
+3. **Review** the staged match: confirm or correct every auto-scored point outcome (winner/unforced-error/forced-error calls, and — for reconstructed matches — every point, since it's a heuristic RallyAI derived from raw shot data, not SwingVision's own classification) and tag anything SwingVision doesn't capture at all, like net approaches. Optional Claude-assisted suggestions can help (never auto-resolving), structured-data quality checks flag things worth a second look (a reconstructed score that doesn't match SwingVision's own summary, a serve-order mismatch, recording gaps), and you can write your own plain-language notes per point for Claude to translate into the right fields — still a separate, explicit step before anything is actually applied
 4. **Finalize** — the match is only written to SQL once every point is confirmed (unresolved points block the whole match, not just themselves); it then appears in the web app's Results tab for the first time (not before — a match can never be auto-finalized, so submitting alone never puts it there)
-5. **Get coached** — Court IQ generates a self-contained HTML report combining your derived stats with AI-generated strategy, drills, and fitness recommendations — viewable by just opening the file, or directly from the Results tab's match list
+5. **Get coached** — RallyAI generates a self-contained HTML report combining your derived stats with AI-generated strategy, drills, and fitness recommendations — viewable by just opening the file, or directly from the Results tab's match list
 
 ## Features
 
@@ -54,7 +54,7 @@ All aggregate statistics are derived from the `point` table through queries rath
 ## Project Structure
 
 ```
-court-iq/
+rallyai/
 ├── README.md
 ├── CLAUDE.md
 ├── .gitignore

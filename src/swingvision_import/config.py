@@ -106,5 +106,5 @@ class ImportConfig:
     )
     needs_review_end_types: frozenset[str] = NEEDS_REVIEW_END_TYPES
     pending_dir: Path = _REPO_ROOT / "src" / "swingvision_import" / "pending"
-    db_path: Path = _REPO_ROOT / "data" / "court_iq.db"
+    db_path: Path = _REPO_ROOT / "data" / "rallyai.db"
     schema_path: Path = _REPO_ROOT / "data" / "schema.sql"

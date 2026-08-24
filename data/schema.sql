@@ -1,5 +1,5 @@
 -- ============================================
--- Court IQ - Tennis Match Tracker
+-- RallyAI - Tennis Match Tracker
 -- Database Schema
 -- ============================================
 
