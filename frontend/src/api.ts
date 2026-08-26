@@ -4,6 +4,7 @@ import type {
   JournalFeedback,
   MatchStats,
   PendingDetail,
+  ShotPoint,
 } from './types'
 
 export class ApiError extends Error {
@@ -62,6 +63,8 @@ export const api = {
     ),
 
   media: (matchId: number) => request<{ videos: string[] }>(`/api/matches/${matchId}/media`),
+
+  shotEmbeddings: () => request<ShotPoint[]>('/api/shots/embeddings'),
 
   importMatch: (formData: FormData) =>
     request<ImportResult>('/api/import', { method: 'POST', body: formData }),

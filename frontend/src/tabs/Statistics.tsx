@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -15,6 +15,10 @@ import type { MatchStats } from '../types'
 import GlassCard from '../components/GlassCard'
 import Skeleton from '../components/Skeleton'
 import StatTile from '../components/StatTile'
+
+// Lazy: three.js/@react-three/fiber only load once someone actually views
+// the Statistics tab, keeping the rest of the app's bundle unaffected.
+const ShotMap = lazy(() => import('../components/ShotMap'))
 
 const AXIS_STYLE = { fontSize: 12, fill: 'var(--color-ink-muted)' }
 const TOOLTIP_STYLE = {
@@ -196,6 +200,19 @@ export default function Statistics() {
             </div>
           </div>
         )}
+      </GlassCard>
+
+      <GlassCard className="p-6">
+        <h2 className="font-[var(--font-display)] text-lg font-bold">Shot Map</h2>
+        <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
+          Every tracked shot across your matches, projected into 3D — green points belong to
+          rallies you won, red to ones you lost. Grows as you load more matches.
+        </p>
+        <div className="mt-4">
+          <Suspense fallback={<Skeleton className="h-96" />}>
+            <ShotMap />
+          </Suspense>
+        </div>
       </GlassCard>
     </div>
   )

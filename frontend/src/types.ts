@@ -145,3 +145,14 @@ export const POINT_END_TYPES = [
 export type PointEndType = (typeof POINT_END_TYPES)[number]
 
 export const WINNING_END_TYPES: ReadonlySet<string> = new Set(['ace', 'winner', 'return_winner'])
+
+export interface ShotPoint {
+  match_id: number
+  point_won: boolean
+  shot_type: string
+  stroke: string
+  result: string
+  x: number
+  y: number
+  z: number
+}

@@ -21,6 +21,7 @@ from flask import Blueprint, Flask, jsonify, request, send_from_directory
 from ai.config import AICoachConfig
 from ai.journal import generate_journal_feedback
 from scripts.client import get_anthropic_client
+from shot_map.embeddings import build_shot_embeddings
 from stats.queries import (
     all_match_ids,
     all_match_stats,
@@ -210,6 +211,24 @@ def create_api_blueprint(
             if path.is_file()
         )
         return jsonify({"videos": videos})
+
+    @api.get("/shots/embeddings")
+    def shot_embeddings():
+        raw_ids = request.args.get("match_ids")
+        connection = _connection()
+        try:
+            match_ids = (
+                [int(x) for x in raw_ids.split(",") if x]
+                if raw_ids
+                else all_match_ids(connection)
+            )
+        finally:
+            connection.close()
+
+        points = build_shot_embeddings(
+            import_config.db_path, import_config.pending_dir, match_ids
+        )
+        return jsonify([asdict(p) for p in points])
 
     @api.post("/import")
     def do_import():

@@ -287,6 +287,41 @@ def test_coach_generates_feedback_from_the_journal_entry(
     assert response.get_json()["feedback"] == "Great serving today - keep it up."
 
 
+def test_shot_embeddings_returns_points_for_a_finalized_reconstructed_match(
+    client, xlsx_bytes, import_config
+):
+    _upload(client, xlsx_bytes)
+    record = load_pending(import_config.pending_dir / "2026-08-06_Alex.json")
+    for point in [p for s in record.sets for p in s.points if p.needs_review]:
+        client.post(
+            "/api/pending/2026-08-06_Alex.json/confirm-point",
+            json={
+                "set_number": record.sets[0].set_number,
+                "game_number": point.game_number,
+                "point_number": point.point_number,
+                "point_end_type": "winner",
+                "point_won": True,
+                "net_approach": False,
+            },
+        )
+    match_id = client.post("/api/pending/2026-08-06_Alex.json/finalize").get_json()["match_id"]
+
+    response = client.get("/api/shots/embeddings")
+
+    assert response.status_code == 200
+    points = response.get_json()
+    assert len(points) > 0
+    assert all(p["match_id"] == match_id for p in points)
+    assert all("x" in p and "y" in p and "z" in p for p in points)
+
+
+def test_shot_embeddings_empty_before_any_match_is_finalized(client):
+    response = client.get("/api/shots/embeddings")
+
+    assert response.status_code == 200
+    assert response.get_json() == []
+
+
 def test_media_returns_empty_list_when_no_video_was_uploaded(client, finalized_match_id):
     response = client.get(f"/api/matches/{finalized_match_id}/media")
 
