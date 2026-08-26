@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from .records import MatchRecord
+from .records import LOSING_END_TYPES, VALID_END_TYPES, WINNING_END_TYPES, MatchRecord
 
 # Characters invalid in Windows filenames (a superset of what's invalid on
 # macOS/Linux), plus whitespace collapsed to a single underscore. Opponent
@@ -83,6 +83,81 @@ def load_pending(path: Path) -> MatchRecord:
     """
     data = json.loads(path.read_text(encoding="utf-8"))
     return MatchRecord.from_dict(data)
+
+
+class ConfirmationError(ValueError):
+    """Raised when a direct point confirmation is invalid.
+
+    Covers both an unknown (set_number, game_number, point_number) lookup
+    and a point_end_type/point_won pair that would violate
+    data/schema.sql's CHECK constraint - the same consistency rule
+    review_resolve.resolve_point_answer enforces on Claude's parsed output,
+    applied here to a human's direct choice from the review UI instead.
+    """
+
+
+def confirm_point(
+    record: MatchRecord,
+    *,
+    set_number: int,
+    game_number: int,
+    point_number: int,
+    point_end_type: str,
+    point_won: bool,
+    net_approach: bool,
+) -> MatchRecord:
+    """Directly applies a human's manual confirmation for one flagged point.
+
+    The browser review UI's fast path: the human picks the correct
+    point_end_type/point_won/net_approach straight from controls in the
+    UI, no Claude call needed. Distinct from apply_resolutions(), which
+    only ever applies resolved_* fields that review_resolve.py already
+    parsed from a review_answer - this sets the real fields immediately
+    from the human's direct input and clears needs_review the same way.
+
+    Args:
+        record: The staged match record to update in place.
+        set_number: The point's set number.
+        game_number: The point's game number within that set.
+        point_number: The point's number within that game.
+        point_end_type: The confirmed outcome - must be one of
+            records.VALID_END_TYPES.
+        point_won: Whether the tracked player won the point.
+        net_approach: Whether the tracked player approached the net.
+
+    Returns:
+        The same record, with the matching point's fields updated and
+        needs_review cleared. Not saved to disk - the caller decides when
+        to persist (see save_pending).
+
+    Raises:
+        ConfirmationError: If point_end_type isn't a valid value, if it's
+            inconsistent with point_won (mirrors the point table's own
+            CHECK constraint), or if no point matches the given
+            set/game/point numbers.
+    """
+    if point_end_type not in VALID_END_TYPES:
+        raise ConfirmationError(f"not a valid point_end_type: {point_end_type!r}")
+    if point_end_type in WINNING_END_TYPES and not point_won:
+        raise ConfirmationError(f"{point_end_type!r} requires point_won=true, got false")
+    if point_end_type in LOSING_END_TYPES and point_won:
+        raise ConfirmationError(f"{point_end_type!r} requires point_won=false, got true")
+
+    for set_record in record.sets:
+        if set_record.set_number != set_number:
+            continue
+        for point in set_record.points:
+            if point.game_number != game_number or point.point_number != point_number:
+                continue
+            point.point_end_type = point_end_type
+            point.point_won = point_won
+            point.net_approach = net_approach
+            point.needs_review = False
+            return record
+
+    raise ConfirmationError(
+        f"no point at set {set_number} game {game_number} point {point_number}"
+    )
 
 
 def unresolved_flags(record: MatchRecord) -> list[str]:

@@ -24,21 +24,9 @@ import anthropic
 from ai.client import AnthropicClientLike, extract_text, strip_markdown_fence
 
 from .raw import RawShotRow
-from .records import PointRecord
+from .records import VALID_END_TYPES, PointRecord
 
 logger = logging.getLogger(__name__)
-
-_VALID_END_TYPES = frozenset(
-    {
-        "winner",
-        "unforced_error",
-        "forced_error",
-        "ace",
-        "double_fault",
-        "return_winner",
-        "return_error",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -169,7 +157,7 @@ def suggest_point_resolution(
         raw_text = extract_text(response)
         data = json.loads(strip_markdown_fence(raw_text))
         point_end_type = data["point_end_type"]
-        if point_end_type not in _VALID_END_TYPES:
+        if point_end_type not in VALID_END_TYPES:
             raise ValueError(f"not a valid point_end_type: {point_end_type!r}")
         return PointSuggestion(
             point_end_type=point_end_type,

@@ -30,6 +30,7 @@ data/media/
 
 # Generated AI coaching reports and rendered HTML - personal data, not code
 ai/reports/
+ai/journal_feedback/
 reports/output/
 
 # IDE

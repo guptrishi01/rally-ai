@@ -8,8 +8,12 @@ that fetches from SQLite and assembles the full MatchStats bundle.
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .models import (
+    CareerHighlight,
+    CareerStats,
     ClutchStats,
     MatchStats,
     NetStats,
@@ -270,13 +274,13 @@ def match_stats(conn: sqlite3.Connection, match_id: int, set_id: int | None = No
         ValueError: If no match with this match_id exists.
     """
     row = conn.execute(
-        "SELECT date, opponent, result, energy_rating, mental_rating, pros, cons "
+        "SELECT date, opponent, result, energy_rating, mental_rating, pros, cons, notes "
         "FROM match WHERE match_id = ?",
         (match_id,),
     ).fetchone()
     if row is None:
         raise ValueError(f"No match with match_id={match_id}")
-    date, opponent, result, energy_rating, mental_rating, pros, cons = row
+    date, opponent, result, energy_rating, mental_rating, pros, cons, notes = row
 
     points = _fetch_points(conn, match_id, set_id)
 
@@ -295,6 +299,7 @@ def match_stats(conn: sqlite3.Connection, match_id: int, set_id: int | None = No
             mental_rating=mental_rating,
             pros=pros,
             cons=cons,
+            notes=notes,
         ),
     )
 
@@ -311,3 +316,141 @@ def all_match_ids(conn: sqlite3.Connection) -> list[int]:
     """
     rows = conn.execute("SELECT match_id FROM match ORDER BY date").fetchall()
     return [row[0] for row in rows]
+
+
+def all_match_stats(db_path: Path, match_ids: list[int]) -> list[MatchStats]:
+    """Fetches MatchStats for every given match_id concurrently.
+
+    Each match's stats come from an independent, stateless SQLite read, so
+    this mirrors ai/generate.py's ThreadPoolExecutor pattern (the other
+    sanctioned use of it in this codebase — see CLAUDE.md's Code
+    Conventions) instead of fetching one at a time, keeping the Overview/
+    Statistics tabs' load time closer to linear as match count grows. A
+    single sqlite3.Connection isn't safe to share across threads, so each
+    worker opens (and closes) its own short-lived, read-only connection to
+    the same database file rather than reusing a passed-in connection.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        match_ids: The matches to fetch, in the order results should come
+            back in (all_match_ids' date-ascending order, typically).
+
+    Returns:
+        MatchStats in the same order as match_ids. Empty if match_ids is
+        empty (no thread pool spun up for nothing).
+    """
+    if not match_ids:
+        return []
+
+    def _fetch(match_id: int) -> MatchStats:
+        connection = sqlite3.connect(db_path)
+        try:
+            return match_stats(connection, match_id)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=min(8, len(match_ids))) as executor:
+        return list(executor.map(_fetch, match_ids))
+
+
+def career_stats_from_matches(stats: list[MatchStats]) -> CareerStats:
+    """Aggregates career-level stats from an already-fetched list of matches.
+
+    Pure - no I/O, easy to test without a database or threading, matching
+    this module's existing *_from_points convention (see
+    serving_stats_from_points etc.): the I/O (all_match_stats, above) and
+    the aggregation logic are two separate, independently testable steps.
+
+    Args:
+        stats: Every finalized match's MatchStats, in any order.
+
+    Returns:
+        The career-wide rollup. Every count/percentage field is 0/0.0 and
+        both highlights are None if stats is empty, matching this
+        package's "0.0 rather than raising" convention for empty scopes.
+    """
+    if not stats:
+        return CareerStats(
+            total_matches=0,
+            wins=0,
+            losses=0,
+            win_pct=0.0,
+            current_streak_result=None,
+            current_streak_count=0,
+            avg_first_serve_pct=0.0,
+            avg_points_won_pct=0.0,
+            best_match_by_points_won_pct=None,
+            most_aces_in_a_match=None,
+        )
+
+    total = len(stats)
+    wins = sum(1 for m in stats if m.result == "W")
+
+    by_date = sorted(stats, key=lambda m: m.date)
+    current_streak_result = by_date[-1].result
+    current_streak_count = 0
+    for m in reversed(by_date):
+        if m.result != current_streak_result:
+            break
+        current_streak_count += 1
+
+    best = max(stats, key=lambda m: m.point_outcomes.points_won_pct)
+    most_aces = max(stats, key=lambda m: m.serving.aces)
+
+    return CareerStats(
+        total_matches=total,
+        wins=wins,
+        losses=total - wins,
+        win_pct=_pct(wins, total),
+        current_streak_result=current_streak_result,
+        current_streak_count=current_streak_count,
+        avg_first_serve_pct=round(sum(m.serving.first_serve_pct for m in stats) / total, 1),
+        avg_points_won_pct=round(sum(m.point_outcomes.points_won_pct for m in stats) / total, 1),
+        best_match_by_points_won_pct=CareerHighlight(
+            match_id=best.match_id,
+            date=best.date,
+            opponent=best.opponent,
+            value=best.point_outcomes.points_won_pct,
+            label="Best points-won%",
+        ),
+        most_aces_in_a_match=CareerHighlight(
+            match_id=most_aces.match_id,
+            date=most_aces.date,
+            opponent=most_aces.opponent,
+            value=most_aces.serving.aces,
+            label="Most aces",
+        ),
+    )
+
+
+def update_journal_fields(
+    conn: sqlite3.Connection,
+    match_id: int,
+    *,
+    pros: str | None,
+    cons: str | None,
+    notes: str | None,
+) -> None:
+    """Updates a finalized match's pros/cons/notes — the Journal tab's sticky note.
+
+    One sticky note per match, reusing these existing `match` columns
+    rather than a separate journal_entry table — see CLAUDE.md's Journal
+    design decision.
+
+    Args:
+        conn: An open SQLite connection.
+        match_id: The match to update.
+        pros: New "what went well" text, replacing the existing value.
+        cons: New "what needs work" text, replacing the existing value.
+        notes: New free-text notes, replacing the existing value.
+
+    Raises:
+        ValueError: If no match with this match_id exists.
+    """
+    cursor = conn.execute(
+        "UPDATE match SET pros = ?, cons = ?, notes = ? WHERE match_id = ?",
+        (pros, cons, notes, match_id),
+    )
+    if cursor.rowcount == 0:
+        raise ValueError(f"No match with match_id={match_id}")
+    conn.commit()

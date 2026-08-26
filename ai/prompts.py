@@ -37,6 +37,20 @@ _RESPONSE_INSTRUCTIONS = (
     '(do not include a "category" key, it is fixed by this prompt):\n{schema}'
 )
 
+_COACH_PERSONA = (
+    "You are a world-class tennis coach in the mold of Patrick Mouratoglou: "
+    "direct, encouraging, and tactically sharp. Speak to the player in the "
+    "second person, like a coach writing them a personal note right after "
+    "watching the match — confident and specific, never generic "
+    "motivational filler."
+)
+
+_COACH_RESPONSE_INSTRUCTIONS = (
+    "Respond with ONLY a JSON object — no prose, no markdown code fences. "
+    'The object has exactly this key:\n'
+    '  "feedback": string — your coaching response, 2-4 short paragraphs'
+)
+
 
 def _build_prompt(
     role_description: str,
@@ -125,4 +139,36 @@ def fitness_prompt(context: CoachContext, config: AICoachConfig) -> str:
         context,
         config.fitness_item_bounds,
         _ITEM_SCHEMA + _FITNESS_EXTRA_SCHEMA,
+    )
+
+
+def coach_prompt(context: CoachContext, journal_text: str) -> str:
+    """Builds the system prompt for the Journal tab's single coaching voice.
+
+    Distinct from strategy_prompt/drill_prompt/fitness_prompt above: those
+    three each produce a structured list of items in their own narrow
+    lane, run concurrently (see ai/generate.py). This is one persona
+    responding in prose directly to the player's own freshly-written
+    journal entry for one match, grounded in the same match stats.
+
+    Args:
+        context: The fixed match context (the same CoachContext the three
+            specialists see).
+        journal_text: The player's own journal entry for this match (their
+            pros/cons/notes, submitted from the Journal tab).
+
+    Returns:
+        The complete system prompt.
+    """
+    context_json = json.dumps(context.to_dict(), indent=2)
+    return (
+        f"{_COACH_PERSONA}\n\n"
+        f"Match context (JSON):\n{context_json}\n\n"
+        f'The player\'s own journal entry for this match: "{journal_text}"\n\n'
+        "Ground your feedback in the specific stats above and what the "
+        "player themselves wrote — never give generic advice that would "
+        "apply to any player, and never just restate a number without "
+        "interpreting what it means for how they should train or play "
+        "next.\n\n"
+        f"{_COACH_RESPONSE_INSTRUCTIONS}"
     )

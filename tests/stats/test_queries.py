@@ -5,15 +5,27 @@ from pathlib import Path
 
 import pytest
 
-from stats.models import PointRow
+from stats.models import (
+    ClutchStats,
+    MatchStats,
+    NetStats,
+    PointOutcomeStats,
+    PointRow,
+    ReceivingStats,
+    SelfAssessment,
+    ServingStats,
+)
 from stats.queries import (
     all_match_ids,
+    all_match_stats,
+    career_stats_from_matches,
     clutch_stats_from_points,
     match_stats,
     net_stats_from_points,
     point_outcome_stats_from_points,
     receiving_stats_from_points,
     serving_stats_from_points,
+    update_journal_fields,
 )
 from swingvision_import.load import finalize_and_load
 from swingvision_import.records import MatchRecord, PointRecord, SetRecord
@@ -217,3 +229,113 @@ def test_all_match_ids_orders_by_date(tmp_path: Path):
     earlier_match_id = finalize_and_load(connection, earlier_record)
 
     assert all_match_ids(connection) == [earlier_match_id, first_match_id, later_match_id]
+
+
+def test_all_match_stats_returns_empty_list_without_opening_a_connection():
+    # A path that doesn't exist would raise if all_match_stats tried to
+    # connect to it - the empty-match_ids short circuit must come first.
+    assert all_match_stats(Path("does/not/exist.db"), []) == []
+
+
+def test_all_match_stats_fetches_every_match_in_the_given_order(tmp_path: Path):
+    connection, first_match_id = _seed_match(tmp_path)
+    later_record = MatchRecord(
+        date="2026-08-13",
+        opponent="Jordan",
+        result="L",
+        sets=[SetRecord(set_number=1, games_won=4, games_lost=6, points=[])],
+    )
+    later_match_id = finalize_and_load(connection, later_record)
+
+    results = all_match_stats(tmp_path / "test.db", [later_match_id, first_match_id])
+
+    assert [m.match_id for m in results] == [later_match_id, first_match_id]
+    assert [m.opponent for m in results] == ["Jordan", "Alex"]
+
+
+def _match_stats(
+    match_id: int,
+    date: str,
+    opponent: str,
+    result: str,
+    *,
+    aces: int = 1,
+    points_won_pct: float = 50.0,
+    first_serve_pct: float = 60.0,
+) -> MatchStats:
+    return MatchStats(
+        match_id=match_id,
+        date=date,
+        opponent=opponent,
+        result=result,
+        serving=ServingStats(10, 6, first_serve_pct, 4, 2, 50.0, aces, 1, 3, 4, 75.0),
+        receiving=ReceivingStats(2, 1, 50.0, 2, 4, 50.0),
+        point_outcomes=PointOutcomeStats(20, 12, points_won_pct, 6, 3, 2, 1, 1, 2.0),
+        net=NetStats(3, 2, 66.7),
+        clutch=ClutchStats(2, 1, 50.0),
+        self_assessment=SelfAssessment(4, 3, None, None, None),
+    )
+
+
+def test_career_stats_from_matches_zeroed_for_an_empty_list():
+    stats = career_stats_from_matches([])
+
+    assert stats.total_matches == 0
+    assert stats.win_pct == 0.0
+    assert stats.current_streak_result is None
+    assert stats.best_match_by_points_won_pct is None
+    assert stats.most_aces_in_a_match is None
+
+
+def test_career_stats_from_matches_computes_record_and_current_streak():
+    matches = [
+        _match_stats(1, "2026-08-01", "Alex", "W"),
+        _match_stats(2, "2026-08-08", "Sam", "L"),
+        _match_stats(3, "2026-08-15", "Jordan", "W"),
+        _match_stats(4, "2026-08-22", "Casey", "W"),
+    ]
+
+    stats = career_stats_from_matches(matches)
+
+    assert stats.total_matches == 4
+    assert stats.wins == 3
+    assert stats.losses == 1
+    assert stats.win_pct == 75.0
+    # Most recent two matches were both wins; the loss before that breaks the streak.
+    assert stats.current_streak_result == "W"
+    assert stats.current_streak_count == 2
+
+
+def test_career_stats_from_matches_finds_highlights_regardless_of_input_order():
+    matches = [
+        _match_stats(1, "2026-08-01", "Alex", "W", aces=2, points_won_pct=55.0),
+        _match_stats(2, "2026-08-08", "Sam", "L", aces=7, points_won_pct=40.0),
+        _match_stats(3, "2026-08-15", "Jordan", "W", aces=1, points_won_pct=70.0),
+    ]
+
+    stats = career_stats_from_matches(matches)
+
+    assert stats.best_match_by_points_won_pct.match_id == 3
+    assert stats.best_match_by_points_won_pct.value == 70.0
+    assert stats.most_aces_in_a_match.match_id == 2
+    assert stats.most_aces_in_a_match.value == 7
+
+
+def test_update_journal_fields_persists_new_pros_cons_notes(tmp_path: Path):
+    connection, match_id = _seed_match(tmp_path)
+
+    update_journal_fields(
+        connection, match_id, pros="Better footwork", cons="Second serve", notes="Windy day"
+    )
+
+    updated = match_stats(connection, match_id).self_assessment
+    assert updated.pros == "Better footwork"
+    assert updated.cons == "Second serve"
+    assert updated.notes == "Windy day"
+
+
+def test_update_journal_fields_raises_for_an_unknown_match_id(tmp_path: Path):
+    connection, _ = _seed_match(tmp_path)
+
+    with pytest.raises(ValueError, match="999"):
+        update_journal_fields(connection, 999, pros="x", cons="y", notes="z")

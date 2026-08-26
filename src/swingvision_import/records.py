@@ -10,6 +10,29 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+# The point table's full CHECK-constraint vocabulary for point_end_type,
+# shared by every module that validates or prompts around it
+# (review_assist.py, review_resolve.py, review.py's confirm_point) so
+# there's exactly one source of truth instead of parallel copies.
+VALID_END_TYPES: frozenset[str] = frozenset(
+    {
+        "winner",
+        "unforced_error",
+        "forced_error",
+        "ace",
+        "double_fault",
+        "return_winner",
+        "return_error",
+    }
+)
+
+# Mirrors data/schema.sql's point CHECK constraint: point_end_type
+# functionally determines point_won, and the two must never disagree.
+WINNING_END_TYPES: frozenset[str] = frozenset({"ace", "winner", "return_winner"})
+LOSING_END_TYPES: frozenset[str] = frozenset(
+    {"double_fault", "unforced_error", "forced_error", "return_error"}
+)
+
 
 @dataclass
 class PointRecord:

@@ -284,7 +284,7 @@ class SwingVisionImportPipeline:
         notes.extend(quality_check.check_tracked_identity(settings, tracked_identity))
         return notes
 
-    def _shots_by_point(self, record: MatchRecord) -> dict[int, list[RawShotRow]] | None:
+    def shots_by_point(self, record: MatchRecord) -> dict[int, list[RawShotRow]] | None:
         """Re-derives point_number -> shots for a staged record.
 
         Re-merges multi-part files the same way ingest_multi_part() did, so
@@ -343,7 +343,7 @@ class SwingVisionImportPipeline:
                 source_files to re-parse.
         """
         record = review.load_pending(json_path)
-        shots_by_point = self._shots_by_point(record)
+        shots_by_point = self.shots_by_point(record)
         if shots_by_point is None:
             raise ValueError(f"{json_path}: record has no source_file(s) to re-parse.")
 
@@ -409,7 +409,7 @@ class SwingVisionImportPipeline:
             re-saved to the same pending JSON path.
         """
         record = review.load_pending(json_path)
-        shots_by_point = self._shots_by_point(record) or {}
+        shots_by_point = self.shots_by_point(record) or {}
         resolution_config = resolution_config or ResolutionConfig()
 
         resolved_count = 0
@@ -478,6 +478,56 @@ class SwingVisionImportPipeline:
 
         review.save_pending(record, self.config.pending_dir)
         logger.info("Applied %d resolution(s) for %s", applied_count, json_path)
+        return record
+
+    def confirm_point(
+        self,
+        json_path: Path,
+        *,
+        set_number: int,
+        game_number: int,
+        point_number: int,
+        point_end_type: str,
+        point_won: bool,
+        net_approach: bool,
+    ) -> MatchRecord:
+        """Directly applies a human's manual confirmation for one flagged point.
+
+        The browser review UI's fast path onto review.confirm_point() - the
+        human picks the point's real classification straight from controls
+        in the UI rather than writing a review_answer for Claude to parse.
+        Loads the pending record, delegates the actual field update and
+        consistency check to review.confirm_point(), then re-saves.
+
+        Args:
+            json_path: Path to a pending JSON file previously written by
+                ingest().
+            set_number: The point's set number.
+            game_number: The point's game number within that set.
+            point_number: The point's number within that game.
+            point_end_type: The confirmed outcome.
+            point_won: Whether the tracked player won the point.
+            net_approach: Whether the tracked player approached the net.
+
+        Returns:
+            The record with the matching point's fields updated and
+            needs_review cleared. Also re-saved to the same pending JSON
+            path.
+
+        Raises:
+            review.ConfirmationError: See review.confirm_point.
+        """
+        record = review.load_pending(json_path)
+        review.confirm_point(
+            record,
+            set_number=set_number,
+            game_number=game_number,
+            point_number=point_number,
+            point_end_type=point_end_type,
+            point_won=point_won,
+            net_approach=net_approach,
+        )
+        review.save_pending(record, self.config.pending_dir)
         return record
 
     def finalize(self, json_path: Path) -> int:

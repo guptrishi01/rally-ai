@@ -16,7 +16,21 @@ from werkzeug.utils import secure_filename
 from swingvision_import.review import slugify_filename
 
 
-def _match_slug(date: str, opponent: str) -> str:
+def match_slug(date: str, opponent: str) -> str:
+    """Builds the same filesystem-safe match identifier the savers below use.
+
+    Public (not just an internal helper) since api.py's Film Review media
+    lookup needs to reconstruct the same per-match subdirectory name that
+    save_uploaded_videos originally saved into, from just a match's
+    date/opponent.
+
+    Args:
+        date: The match date.
+        opponent: The opponent's name.
+
+    Returns:
+        A filesystem-safe "<date>_<slugified opponent>" identifier.
+    """
     return f"{date}_{slugify_filename(opponent)}"
 
 
@@ -36,7 +50,7 @@ def save_uploaded_xlsx(
     """
     uploads_dir.mkdir(parents=True, exist_ok=True)
     filename = secure_filename(file.filename or "") or "match.xlsx"
-    dest = uploads_dir / f"{_match_slug(date, opponent)}_{filename}"
+    dest = uploads_dir / f"{match_slug(date, opponent)}_{filename}"
     file.save(dest)
     return dest
 
@@ -56,7 +70,7 @@ def save_uploaded_videos(
     Returns:
         Paths to every file actually saved (skips empty file inputs).
     """
-    match_dir = media_dir / _match_slug(date, opponent)
+    match_dir = media_dir / match_slug(date, opponent)
     saved: list[Path] = []
     for file in files:
         if not file or not file.filename:

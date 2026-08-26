@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swingvision_import.records import MatchRecord, PointRecord, SetRecord
 from swingvision_import.review import (
+    ConfirmationError,
+    confirm_point,
     find_pending_path,
     load_pending,
     save_pending,
@@ -142,3 +146,83 @@ def test_find_pending_path_locates_a_previously_saved_record(tmp_path: Path):
 
 def test_find_pending_path_returns_none_when_nothing_was_ever_staged(tmp_path: Path):
     assert find_pending_path("2026-08-06", "Alex", tmp_path) is None
+
+
+def test_confirm_point_sets_fields_and_clears_needs_review():
+    record = _sample_record(needs_review=True)
+
+    confirm_point(
+        record,
+        set_number=1,
+        game_number=1,
+        point_number=1,
+        point_end_type="ace",
+        point_won=True,
+        net_approach=True,
+    )
+
+    point = record.sets[0].points[0]
+    assert point.point_end_type == "ace"
+    assert point.point_won is True
+    assert point.net_approach is True
+    assert point.needs_review is False
+
+
+def test_confirm_point_rejects_an_unknown_point_end_type():
+    record = _sample_record(needs_review=True)
+
+    with pytest.raises(ConfirmationError, match="not a valid point_end_type"):
+        confirm_point(
+            record,
+            set_number=1,
+            game_number=1,
+            point_number=1,
+            point_end_type="let",
+            point_won=True,
+            net_approach=False,
+        )
+
+
+def test_confirm_point_rejects_a_winning_end_type_with_point_won_false():
+    record = _sample_record(needs_review=True)
+
+    with pytest.raises(ConfirmationError, match="requires point_won=true"):
+        confirm_point(
+            record,
+            set_number=1,
+            game_number=1,
+            point_number=1,
+            point_end_type="ace",
+            point_won=False,
+            net_approach=False,
+        )
+
+
+def test_confirm_point_rejects_a_losing_end_type_with_point_won_true():
+    record = _sample_record(needs_review=True)
+
+    with pytest.raises(ConfirmationError, match="requires point_won=false"):
+        confirm_point(
+            record,
+            set_number=1,
+            game_number=1,
+            point_number=1,
+            point_end_type="double_fault",
+            point_won=True,
+            net_approach=False,
+        )
+
+
+def test_confirm_point_raises_when_no_point_matches():
+    record = _sample_record(needs_review=True)
+
+    with pytest.raises(ConfirmationError, match="no point at set 2 game 1 point 1"):
+        confirm_point(
+            record,
+            set_number=2,
+            game_number=1,
+            point_number=1,
+            point_end_type="ace",
+            point_won=True,
+            net_approach=False,
+        )

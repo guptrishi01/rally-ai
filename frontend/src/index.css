@@ -1,0 +1,93 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Manrope', 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+  /* Surfaces - dark-first, matching reports/palette.py's dark tokens in spirit
+     but extended into a richer, layered dashboard surface stack. */
+  --color-page: #0a0a0f;
+  --color-surface: #14141c;
+  --color-surface-raised: #1b1b26;
+  --color-border: #2a2a38;
+  --color-border-soft: #21212d;
+
+  --color-ink-primary: #f5f5f8;
+  --color-ink-secondary: #b4b4c4;
+  --color-ink-muted: #7d7d90;
+
+  /* Lifted verbatim from reports/palette.py's dark tokens, so the SPA and
+     the standalone downloadable report read as one system. */
+  --color-sequential: #3987e5;
+  --color-categorical-2: #d95926;
+  --color-good: #16c95f;
+  --color-critical: #f0475a;
+
+  /* Vibrant accent trio for CTAs / highlight badges - the "modern, vibrant"
+     layer the dataviz palette alone doesn't cover. */
+  --color-brand-violet: #8b5cf6;
+  --color-brand-blue: #3987e5;
+  --color-brand-cyan: #22d3ee;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer utilities {
+  .text-gradient {
+    background-image: linear-gradient(
+      90deg,
+      var(--color-brand-violet),
+      var(--color-brand-blue) 55%,
+      var(--color-brand-cyan)
+    );
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  .bg-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      var(--color-brand-violet),
+      var(--color-brand-blue) 60%,
+      var(--color-brand-cyan)
+    );
+  }
+
+  .glass-card {
+    background: color-mix(in srgb, var(--color-surface-raised) 88%, transparent);
+    border: 1px solid var(--color-border-soft);
+    backdrop-filter: blur(16px);
+  }
+
+  .glow-violet {
+    box-shadow: 0 0 60px -15px color-mix(in srgb, var(--color-brand-violet) 55%, transparent);
+  }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-brand-blue) 40%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+}

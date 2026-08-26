@@ -158,5 +158,5 @@ def sample_match_stats() -> MatchStats:
         point_outcomes=PointOutcomeStats(20, 12, 60.0, 6, 3, 2, 1, 1, 2.0),
         net=NetStats(3, 2, 66.7),
         clutch=ClutchStats(2, 1, 50.0),
-        self_assessment=SelfAssessment(4, 3, "Served big", "Slow starts"),
+        self_assessment=SelfAssessment(4, 3, "Served big", "Slow starts", None),
     )

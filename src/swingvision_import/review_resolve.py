@@ -29,26 +29,9 @@ import anthropic
 from ai.client import AnthropicClientLike, extract_text, strip_markdown_fence
 
 from .raw import RawShotRow
-from .records import PointRecord
+from .records import LOSING_END_TYPES, VALID_END_TYPES, WINNING_END_TYPES, PointRecord
 
 logger = logging.getLogger(__name__)
-
-_VALID_END_TYPES = frozenset(
-    {
-        "winner",
-        "unforced_error",
-        "forced_error",
-        "ace",
-        "double_fault",
-        "return_winner",
-        "return_error",
-    }
-)
-
-# Mirrors data/schema.sql's point CHECK constraint: point_end_type
-# functionally determines point_won, and the two must never disagree.
-_WINNING_END_TYPES = frozenset({"ace", "winner", "return_winner"})
-_LOSING_END_TYPES = frozenset({"double_fault", "unforced_error", "forced_error", "return_error"})
 
 
 @dataclass(frozen=True)
@@ -203,7 +186,7 @@ def resolve_point_answer(
         raw_text = extract_text(response)
         data = json.loads(strip_markdown_fence(raw_text))
         point_end_type = data["point_end_type"]
-        if point_end_type not in _VALID_END_TYPES:
+        if point_end_type not in VALID_END_TYPES:
             raise ValueError(f"not a valid point_end_type: {point_end_type!r}")
         point_won = bool(data["point_won"])
         # Must match data/schema.sql's CHECK constraint, or apply_resolutions()
@@ -212,9 +195,9 @@ def resolve_point_answer(
         # the live API: it produced exactly this inconsistent combination
         # once (point_end_type="ace" with point_won=false) despite the
         # prompt's explicit guidance against it.
-        if point_end_type in _WINNING_END_TYPES and not point_won:
+        if point_end_type in WINNING_END_TYPES and not point_won:
             raise ValueError(f"{point_end_type!r} requires point_won=true, got false")
-        if point_end_type in _LOSING_END_TYPES and point_won:
+        if point_end_type in LOSING_END_TYPES and point_won:
             raise ValueError(f"{point_end_type!r} requires point_won=false, got true")
         return PointResolution(
             point_end_type=point_end_type,

@@ -32,7 +32,7 @@ def make_match_stats(
         point_outcomes=PointOutcomeStats(20, 12, 60.0, 6, 3, 2, 1, 1, 2.0),
         net=NetStats(net_approaches, 2, 66.7 if net_approaches else 0.0),
         clutch=ClutchStats(2, 1, 50.0),
-        self_assessment=SelfAssessment(4, 3, pros, cons),
+        self_assessment=SelfAssessment(4, 3, pros, cons, None),
     )
 
 

@@ -28,6 +28,9 @@ class AICoachConfig:
             match JSON into — mirrors ImportConfig.pending_dir's default.
             Used to best-effort look up a match's shot_pattern_summary by
             date/opponent; harmless if nothing's found there.
+        journal_feedback_dir: Directory generated JournalFeedback JSON
+            files (see journal.py) are written to — gitignored, personal
+            AI output, same convention as reports_dir.
     """
 
     model: str = DEFAULT_MODEL
@@ -37,3 +40,4 @@ class AICoachConfig:
     fitness_item_bounds: tuple[int, int] = (1, 3)
     reports_dir: Path = _REPO_ROOT / "ai" / "reports"
     pending_dir: Path = _REPO_ROOT / "src" / "swingvision_import" / "pending"
+    journal_feedback_dir: Path = _REPO_ROOT / "ai" / "journal_feedback"

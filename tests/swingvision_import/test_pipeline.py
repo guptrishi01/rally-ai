@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from swingvision_import.load import UnresolvedReviewError
 from swingvision_import.pipeline import SwingVisionImportPipeline
 from swingvision_import.records import MatchRecord
-from swingvision_import.review import load_pending, save_pending
+from swingvision_import.review import ConfirmationError, load_pending, save_pending
 from tests.ai.conftest import FakeMessage, FakeTextBlock
 from tests.swingvision_import.conftest import add_settings_and_shots_sheets
 
@@ -191,6 +191,84 @@ def test_ingest_reports_excluded_non_match_points_in_import_notes(tmp_path, impo
     record = load_pending(json_path)
 
     assert any("excluded as non-match activity" in note for note in record.import_notes)
+
+
+def test_confirm_point_clears_a_flag_directly_without_an_api_call(
+    synthetic_non_pro_xlsx, import_config
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    record = load_pending(json_path)
+    target = record.sets[0].points[0]
+
+    confirmed = pipeline.confirm_point(
+        json_path,
+        set_number=1,
+        game_number=target.game_number,
+        point_number=target.point_number,
+        point_end_type="ace",
+        point_won=True,
+        net_approach=False,
+    )
+
+    updated = confirmed.sets[0].points[0]
+    assert updated.point_end_type == "ace"
+    assert updated.point_won is True
+    assert updated.needs_review is False
+
+    # Persisted to the same pending file.
+    reloaded = load_pending(json_path)
+    assert reloaded.sets[0].points[0].needs_review is False
+
+
+def test_confirm_point_every_flagged_point_then_finalize_succeeds(
+    synthetic_non_pro_xlsx, import_config
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    record = load_pending(json_path)
+    for point in record.sets[0].points:
+        pipeline.confirm_point(
+            json_path,
+            set_number=1,
+            game_number=point.game_number,
+            point_number=point.point_number,
+            point_end_type="winner",
+            point_won=True,
+            net_approach=False,
+        )
+
+    match_id = pipeline.finalize(json_path)
+    assert match_id == 1
+
+
+def test_confirm_point_rejects_an_inconsistent_pair_and_leaves_the_point_flagged(
+    synthetic_non_pro_xlsx, import_config
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    record = load_pending(json_path)
+    target = record.sets[0].points[0]
+
+    with pytest.raises(ConfirmationError, match="requires point_won"):
+        pipeline.confirm_point(
+            json_path,
+            set_number=1,
+            game_number=target.game_number,
+            point_number=target.point_number,
+            point_end_type="ace",
+            point_won=False,
+            net_approach=False,
+        )
+
+    reloaded = load_pending(json_path)
+    assert reloaded.sets[0].points[0].needs_review is True
 
 
 class _FakeSuggestionMessages:

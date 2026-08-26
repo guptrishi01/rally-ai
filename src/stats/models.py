@@ -164,12 +164,17 @@ class SelfAssessment:
         mental_rating: 1-5, if provided.
         pros: Free-text "what went well."
         cons: Free-text "what needs work."
+        notes: Free-text general notes - the third leg of the Journal tab's
+            sticky note, alongside pros/cons. match_stats() didn't select
+            it until the Journal feature needed it; the column has existed
+            on `match` from the start.
     """
 
     energy_rating: int | None
     mental_rating: int | None
     pros: str | None
     cons: str | None
+    notes: str | None
 
 
 @dataclass(frozen=True)
@@ -199,3 +204,60 @@ class MatchStats:
     net: NetStats
     clutch: ClutchStats
     self_assessment: SelfAssessment
+
+
+@dataclass(frozen=True)
+class CareerHighlight:
+    """One standout match, surfaced on the Overview tab.
+
+    Attributes:
+        match_id: The match's database id.
+        date: ISO-format match date.
+        opponent: Opponent's name.
+        value: The stat value that earned this highlight.
+        label: What the value is (e.g. "Best points-won%", "Most aces").
+    """
+
+    match_id: int
+    date: str
+    opponent: str
+    value: float
+    label: str
+
+
+@dataclass(frozen=True)
+class CareerStats:
+    """Aggregate stats across every finalized match, for the Overview tab.
+
+    Unlike MatchStats/docs/stat-definitions.md, this isn't a per-match
+    stat category - it's a cross-match rollup, computed by
+    queries.career_stats_from_matches over an already-fetched list of
+    MatchStats (see queries.all_match_stats for the concurrent fetch).
+
+    Attributes:
+        total_matches: Count of finalized matches.
+        wins: Count with result == "W".
+        losses: Count with result == "L".
+        win_pct: wins / total_matches, 0.0 if there are no matches.
+        current_streak_result: "W" or "L" — the most recent match's
+            result — or None if there are no matches.
+        current_streak_count: How many matches in a row ended in
+            current_streak_result, counting back from the most recent.
+        avg_first_serve_pct: Mean FS% across every match.
+        avg_points_won_pct: Mean PW% across every match.
+        best_match_by_points_won_pct: The match with the highest PW%, or
+            None if there are no matches.
+        most_aces_in_a_match: The match with the most aces, or None if
+            there are no matches.
+    """
+
+    total_matches: int
+    wins: int
+    losses: int
+    win_pct: float
+    current_streak_result: str | None
+    current_streak_count: int
+    avg_first_serve_pct: float
+    avg_points_won_pct: float
+    best_match_by_points_won_pct: CareerHighlight | None
+    most_aces_in_a_match: CareerHighlight | None
