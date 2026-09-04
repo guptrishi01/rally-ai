@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Project-specific context for RallyAI. See [README.md](README.md) for the product overview and [docs/stat-definitions.md](docs/stat-definitions.md) for stat calculations.
+Project-specific context for Rally AI. See [README.md](README.md) for the product overview and [docs/stat-definitions.md](docs/stat-definitions.md) for stat calculations.
 
 ## Data capture: SwingVision
 
@@ -48,7 +48,7 @@ There is no dedicated wall/backboard session mode in SwingVision (only Match, Ra
 
 **Structured-data quality notes, informational and never blocking** (`quality_check.py`, composed into `MatchRecord.import_notes` by `ingest()`): three checks, all pure Python, no video, no API calls — reconstructed set score vs. the `Sets` sheet's own summary row (this alone would have surfaced the known 6-4-vs-actual-5-3 discrepancy immediately), serve-order vs. optional user-supplied ground truth (`first_server_by_set`, from the intake UI below — a mismatch implies host/guest may be reversed for that set), and self-reported identity vs. the `Settings` sheet's host name (`tracked_identity`). Unlike `needs_review`, `import_notes` never blocks `finalize()` — it's for the reviewer's awareness, alongside the gap/exclusion counts from `reconstruct.py` above.
 
-## Web app: the RallyAI dashboard (React SPA) + JSON API
+## Web app: the Rally AI dashboard (React SPA) + JSON API
 
 `webapp/` is a local Flask app with two responsibilities, kept deliberately separate:
 
@@ -142,7 +142,7 @@ Backend: SQL database (SQLite) for storage, Python for stat aggregation, the Swi
 
 **Given a second look, not adopted for now** (flagged here rather than silently dropped, in case a future feature changes this):
 
-- **Sparse matrix handling** — RallyAI's data is small and dense (per-point flags, per-match stats), not high-dimensional/sparse. No current feature needs it; revisit only if something like large-scale cross-match feature vectors gets built.
+- **Sparse matrix handling** — Rally AI's data is small and dense (per-point flags, per-match stats), not high-dimensional/sparse. No current feature needs it; revisit only if something like large-scale cross-match feature vectors gets built.
 
 ## Versioning & README updates
 

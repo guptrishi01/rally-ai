@@ -103,7 +103,7 @@ export default function App() {
           <button
             onClick={() => selectTab('overview')}
             className="group flex items-baseline gap-2.5"
-            aria-label="RallyAI home"
+            aria-label="Rally AI home"
           >
             <span aria-hidden className="relative block h-2.5 w-2.5 self-center">
               <span className="absolute inset-0 rounded-full bg-[var(--color-accent)]" />
@@ -117,7 +117,7 @@ export default function App() {
               className="text-[19px] tracking-[-0.02em]"
               style={{ fontFamily: 'var(--font-serif)', fontWeight: 500 }}
             >
-              RallyAI
+              Rally AI
             </span>
           </button>
 
@@ -159,7 +159,7 @@ export default function App() {
             <div className="flex items-center gap-4">
               <span className="eyebrow num">{active.index}</span>
               <span className="h-px flex-1 bg-[var(--color-line)]" />
-              <span className="eyebrow">RallyAI</span>
+              <span className="eyebrow">Rally AI</span>
             </div>
             <h1 className="display mt-7 max-w-[17ch]">
               <SplitText text={active.title} />
@@ -218,7 +218,7 @@ export default function App() {
               className="text-[19px] tracking-[-0.02em]"
               style={{ fontFamily: 'var(--font-serif)', fontWeight: 500 }}
             >
-              RallyAI
+              Rally AI
             </p>
             <p className="lede mt-3 max-w-[38ch] text-[14px]">
               A reviewed record of how you actually play — built from SwingVision tracking, never

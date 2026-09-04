@@ -1,4 +1,4 @@
-"""Flask entry point: the RallyAI dashboard (frontend/) + standalone reports.
+"""Flask entry point: the Rally AI dashboard (frontend/) + standalone reports.
 
 Two responsibilities, kept deliberately separate:
 

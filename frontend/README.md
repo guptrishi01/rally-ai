@@ -1,4 +1,4 @@
-# RallyAI dashboard
+# Rally AI dashboard
 
 The React SPA behind the Overview / Journal / Statistics / Film Review tabs. See the repo root [README.md](../README.md) and [CLAUDE.md](../CLAUDE.md) for the product overview and architecture; this is just the build.
 

@@ -1,4 +1,4 @@
-"""JSON API for the RallyAI dashboard (frontend/): Overview, Journal,
+"""JSON API for the Rally AI dashboard (frontend/): Overview, Journal,
 Statistics, and Film Review.
 
 Every route here is a thin wrapper over an existing pipeline/query

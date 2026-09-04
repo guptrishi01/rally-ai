@@ -4,9 +4,9 @@ An AI-powered tennis coaching tool that analyzes your match data to help you imp
 
 ## Overview
 
-The goal of RallyAI is simple: **use AI to become a better tennis player.**
+The goal of Rally AI is simple: **use AI to become a better tennis player.**
 
-After each match, you review your recorded footage, log detailed point-by-point data, and write down your pros (what went well) and cons (what needs work). RallyAI feeds all of this — your raw statistics and your own self-assessment — into a generative AI coach that provides:
+After each match, you review your recorded footage, log detailed point-by-point data, and write down your pros (what went well) and cons (what needs work). Rally AI feeds all of this — your raw statistics and your own self-assessment — into a generative AI coach that provides:
 
 - **Strategic recommendations** — What tactical adjustments to make based on patterns in your data (e.g. "your first serve win % drops in third sets — conserve energy on second serve points early")
 - **Improvement plans** — Specific areas to focus on in practice, prioritized by impact on your results
@@ -16,15 +16,15 @@ The AI coaching gets smarter over time as you log more matches — it can spot t
 
 ### How It Works
 
-1. **Record** your match using [SwingVision](https://swing.vision/) on a phone fence mount — get verbal consent from the other player first, since the camera captures both sides of the court. A Pro subscription isn't required: shot-level AI tracking is free-tier, and RallyAI reconstructs point-by-point data from it when SwingVision's own point/game/set rollup (Pro-only) isn't available
+1. **Record** your match using [SwingVision](https://swing.vision/) on a phone fence mount — get verbal consent from the other player first, since the camera captures both sides of the court. A Pro subscription isn't required: shot-level AI tracking is free-tier, and Rally AI reconstructs point-by-point data from it when SwingVision's own point/game/set rollup (Pro-only) isn't available
 2. **Stage the match** on the dashboard's **Overview** tab (or the `scripts/import_match.py` CLI) — upload the `.xlsx` export and any match video, fill in date/opponent/result, energy/mental ratings, and pros/cons. If the recording was interrupted and split into multiple exports, they're merged into one continuous match rather than staged as separate, incorrectly-scored pieces. The match is staged as JSON, never written straight to the database
-3. **Review** every flagged point right there in the browser: pick the correct outcome (winner/unforced-error/forced-error/ace/etc.) and tag anything SwingVision doesn't capture at all, like net approaches — for reconstructed matches, that's every point, since it's a heuristic RallyAI derived from raw shot data, not SwingVision's own classification. Optional Claude-assisted suggestions can help (never auto-resolving); structured-data quality checks surface things worth a second look (a reconstructed score that doesn't match SwingVision's own summary, a serve-order mismatch, recording gaps)
+3. **Review** every flagged point right there in the browser: pick the correct outcome (winner/unforced-error/forced-error/ace/etc.) and tag anything SwingVision doesn't capture at all, like net approaches — for reconstructed matches, that's every point, since it's a heuristic Rally AI derived from raw shot data, not SwingVision's own classification. Optional Claude-assisted suggestions can help (never auto-resolving); structured-data quality checks surface things worth a second look (a reconstructed score that doesn't match SwingVision's own summary, a serve-order mismatch, recording gaps)
 4. **Load Data** — once every flagged point is confirmed, finalizing writes the match to SQL in one step (unresolved points still block the whole match, not just themselves) and the real match ID appears immediately — a match can never be auto-finalized, so staging alone never adds it to your career stats
 5. **Journal** it — add a quick "what went right / what went wrong" entry on the **Journal** tab and get a Mouratoglou-style coaching reply grounded in that match's actual numbers, or generate the fuller self-contained HTML report (strategy/drills/fitness from three parallel Claude specialists) — both viewable any time, and the report works standalone with no server running
 
 ## Features
 
-- **RallyAI Dashboard** — a React SPA (`frontend/`) with four tabs, served locally by Flask (`python webapp/app.py`):
+- **Rally AI Dashboard** — a React SPA (`frontend/`) with four tabs, served locally by Flask (`python webapp/app.py`):
   - **Overview** — career stat tiles and highlights at a glance, plus the Load Data flow: upload → an in-browser review modal for every flagged point (with an optional Claude-suggestion assist) → finalize, with a tennis-ball progress animation while it loads
   - **Journal** — one sticky note per match (pros/cons/notes) with a Mouratoglou-style AI coach reply grounded in that match's stats and what you wrote
   - **Statistics** — interactive Recharts trend lines and per-match breakdowns across serving, receiving, point outcomes, net play, and clutch stats
