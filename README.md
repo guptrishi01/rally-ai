@@ -1,4 +1,4 @@
-# RallyAI — AI Tennis Coach 🎾
+# Rally AI — AI Tennis Coach 🎾
 
 An AI-powered tennis coaching tool that analyzes your match data to help you improve. Log point-by-point statistics from recorded match footage, reflect on what went right and wrong, and let generative AI turn that data into actionable coaching — strategies to implement, weaknesses to address, and exercises to improve your game.
 
