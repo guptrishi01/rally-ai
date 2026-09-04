@@ -93,7 +93,7 @@ def test_import_missing_xlsx_returns_400_with_error(client):
     )
 
     assert response.status_code == 400
-    assert "choose a SwingVision" in response.get_json()["error"]
+    assert "at least one SwingVision" in response.get_json()["error"]
 
 
 def test_import_saves_uploaded_video_into_a_per_match_directory(
@@ -355,3 +355,88 @@ def test_media_lists_and_serves_an_uploaded_video(client, xlsx_bytes, import_con
     video_response = client.get(videos[0])
     assert video_response.status_code == 200
     assert video_response.data == b"fake video bytes"
+
+
+def _upload_parts(client, xlsx_bytes: bytes, *, exports: list[str], videos: list[str] = ()):
+    """Posts a multi-part submission: several exports under the xlsx_files
+    field, plus footage whose filenames are what pairs it to them."""
+    data = {
+        "xlsx_files": [(io.BytesIO(xlsx_bytes), name) for name in exports],
+        "date": "2026-08-06",
+        "opponent": "Alex",
+        "result": "W",
+    }
+    if videos:
+        data["video_files"] = [(io.BytesIO(b"clip bytes"), name) for name in videos]
+    return client.post("/api/import", data=data, content_type="multipart/form-data")
+
+
+def test_multiple_exports_are_merged_into_one_match(client, xlsx_bytes, import_config):
+    response = _upload_parts(client, xlsx_bytes, exports=["set1.xlsx", "set2.xlsx"])
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [part["index"] for part in body["parts"]] == [1, 2]
+    assert [part["export"] for part in body["parts"]] == ["set1.xlsx", "set2.xlsx"]
+
+    record = load_pending(import_config.pending_dir / "2026-08-06_Alex.json")
+    # ingest_multi_part records every source file; ingest() records one.
+    assert record.source_files is not None
+    assert len(record.source_files) == 2
+
+
+def test_parts_are_ordered_naturally_not_lexicographically(client, xlsx_bytes):
+    response = _upload_parts(client, xlsx_bytes, exports=["part10.xlsx", "part2.xlsx"])
+
+    assert response.status_code == 200
+    assert [p["export"] for p in response.get_json()["parts"]] == ["part2.xlsx", "part10.xlsx"]
+
+
+def test_footage_is_paired_to_the_export_sharing_its_filename(
+    client, xlsx_bytes, webapp_config
+):
+    response = _upload_parts(
+        client,
+        xlsx_bytes,
+        exports=["set1.xlsx", "set2.xlsx"],
+        videos=["set2.mp4", "set1.mp4"],
+    )
+
+    assert response.status_code == 200
+    parts = response.get_json()["parts"]
+    assert parts[0]["videos"] == ["set1.mp4"]
+    assert parts[1]["videos"] == ["set2.mp4"]
+
+    # Saved names carry the part order, so the media listing's plain
+    # sorted() plays them back in the order they were recorded.
+    saved = sorted(p.name for p in (webapp_config.media_dir / "2026-08-06_Alex").iterdir())
+    assert saved == ["part01__set1.mp4", "part02__set2.mp4"]
+
+
+def test_footage_matching_no_export_is_kept_and_reported(client, xlsx_bytes, webapp_config):
+    response = _upload_parts(
+        client, xlsx_bytes, exports=["set1.xlsx", "set2.xlsx"], videos=["set1.mp4", "random.mp4"]
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    saved = sorted(p.name for p in (webapp_config.media_dir / "2026-08-06_Alex").iterdir())
+    assert saved == ["part01__set1.mp4", "unpaired__random.mp4"]
+    notes = " ".join(body["upload_notes"])
+    assert "random.mp4" in notes  # the clip that matched nothing
+    assert "set2.xlsx" in notes  # the export left without footage
+
+
+def test_single_export_keeps_its_footage_filename_unchanged(
+    client, xlsx_bytes, webapp_config
+):
+    """A one-part match has no order to encode, so nothing is renamed and
+    the clip's filename never has to match the export's."""
+    response = _upload_parts(client, xlsx_bytes, exports=["export.xlsx"], videos=["anything.mp4"])
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["parts"][0]["videos"] == ["anything.mp4"]
+    assert body["upload_notes"] == []
+    saved = [p.name for p in (webapp_config.media_dir / "2026-08-06_Alex").iterdir()]
+    assert saved == ["anything.mp4"]

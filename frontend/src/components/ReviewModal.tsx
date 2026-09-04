@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { api } from '../api'
 import { POINT_END_TYPES, WINNING_END_TYPES, type FlaggedPoint, type PendingDetail } from '../types'
-import GlassCard from './GlassCard'
 
 interface ReviewModalProps {
   detail: PendingDetail
@@ -19,6 +19,10 @@ function pointKey(p: Pick<FlaggedPoint, 'set_number' | 'game_number' | 'point_nu
  * is never asked for directly - it's derived from the chosen point_end_type
  * (see WINNING_END_TYPES), the same consistency data/schema.sql's CHECK
  * constraint enforces server-side, so the UI can't submit an invalid pair.
+ *
+ * Presented as one point at a time rather than a scrolling list: the whole
+ * premise is that each of these is a judgement call, and a list invites
+ * skimming past the ones that look obvious.
  */
 export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewModalProps) {
   const [points, setPoints] = useState(detail.points)
@@ -37,6 +41,18 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
   const [confirming, setConfirming] = useState<string | null>(null)
   const [suggesting, setSuggesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const total = detail.points.length
+  const done = total - points.length
+  const current = points[0] ?? null
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   async function handleSuggest() {
     setSuggesting(true)
@@ -88,94 +104,136 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
     }
   }
 
+  const choice = current ? choices[pointKey(current)] : null
+  const won = choice ? WINNING_END_TYPES.has(choice.endType) : false
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <GlassCard className="max-h-[85vh] w-full max-w-2xl overflow-y-auto p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="font-[var(--font-display)] text-xl font-bold">
-              Review flagged points
-            </h2>
-            <p className="text-sm text-[var(--color-ink-secondary)]">
-              {detail.date} vs {detail.opponent} — {points.length} point(s) need confirmation
-            </p>
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      style={{ background: 'color-mix(in srgb, var(--color-ink) 42%, transparent)' }}
+      onClick={onClose}
+    >
+      <motion.div
+        className="panel flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden"
+        initial={{ opacity: 0, y: 24, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-[var(--color-line)] px-8 py-6">
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              <p className="eyebrow">Confirm before it counts</p>
+              <h2 className="h2 mt-3">
+                {points.length === 0 ? 'All points confirmed' : 'Was this point yours?'}
+              </h2>
+              <p className="num mt-2 text-[13px] text-[var(--color-dim)]">
+                {detail.date} · {detail.opponent}
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              className="shrink-0 text-[var(--color-dim)] transition-colors hover:text-[var(--color-ink)]"
+              aria-label="Close"
+            >
+              &#10005;
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="shrink-0 text-lg text-[var(--color-ink-muted)] hover:text-[var(--color-ink-primary)]"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+
+          {/* Progress: the whole point of this modal is that it ends, so it
+              says exactly how far off that is. */}
+          <div className="mt-6 flex items-center gap-4">
+            <div className="h-px flex-1 bg-[var(--color-line-strong)]">
+              <motion.div
+                className="h-px bg-[var(--color-accent)]"
+                animate={{ width: `${total === 0 ? 100 : (done / total) * 100}%` }}
+                transition={{ type: 'spring', stiffness: 140, damping: 22 }}
+              />
+            </div>
+            <span className="eyebrow num shrink-0">
+              {done} / {total}
+            </span>
+          </div>
         </div>
 
-        <button
-          onClick={handleSuggest}
-          disabled={suggesting || points.length === 0}
-          className="mt-4 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm text-[var(--color-ink-secondary)] transition hover:border-[var(--color-brand-blue)] hover:text-[var(--color-ink-primary)] disabled:opacity-50"
-        >
-          {suggesting ? 'Asking Claude…' : 'Get Claude suggestions (spends API money)'}
-        </button>
+        <div className="flex-1 overflow-y-auto px-8 py-7">
+          <button
+            onClick={handleSuggest}
+            disabled={suggesting || points.length === 0}
+            className="btn btn-ghost btn-sm"
+          >
+            {suggesting ? 'Asking Claude…' : 'Ask Claude for a read (spends API credit)'}
+          </button>
 
-        {error && <p className="mt-3 text-sm text-[var(--color-critical)]">{error}</p>}
-
-        <div className="mt-4 space-y-3">
-          {points.length === 0 && (
-            <p className="text-sm font-medium text-[var(--color-good)]">
-              All points confirmed — ready to load.
+          {error && (
+            <p className="mt-4 text-[14px]" style={{ color: 'var(--color-clay)' }}>
+              {error}
             </p>
           )}
-          {points.map((point) => {
-            const key = pointKey(point)
-            const choice = choices[key]
-            const won = WINNING_END_TYPES.has(choice.endType)
-            return (
-              <div key={key} className="rounded-xl border border-[var(--color-border-soft)] p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-medium">
-                    Set {point.set_number} · Game {point.game_number} · Point{' '}
-                    {point.point_number}
+
+          <AnimatePresence mode="wait">
+            {current && choice ? (
+              <motion.div
+                key={pointKey(current)}
+                initial={{ opacity: 0, x: 24 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -24 }}
+                transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                className="mt-7"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-3 border-t border-[var(--color-line)] pt-5">
+                  <span className="num text-[14px]">
+                    Set {current.set_number} · Game {current.game_number} · Point{' '}
+                    {current.point_number}
                   </span>
-                  <span
-                    className="rounded-full px-2 py-0.5 text-xs font-semibold"
-                    style={{
-                      color: won ? 'var(--color-good)' : 'var(--color-critical)',
-                      background: won
-                        ? 'color-mix(in srgb, var(--color-good) 18%, transparent)'
-                        : 'color-mix(in srgb, var(--color-critical) 18%, transparent)',
-                    }}
+                  <motion.span
+                    key={String(won)}
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="eyebrow"
+                    style={{ color: won ? 'var(--color-teal)' : 'var(--color-clay)' }}
                   >
-                    {won ? 'Won' : 'Lost'}
-                  </span>
+                    {won ? 'Counts as won' : 'Counts as lost'}
+                  </motion.span>
                 </div>
 
-                {point.ai_suggested_point_end_type && (
-                  <p className="mt-2 text-xs text-[var(--color-brand-cyan)]">
-                    Claude suggests <strong>{point.ai_suggested_point_end_type}</strong>:{' '}
-                    {point.ai_suggestion_reasoning}
-                  </p>
+                {current.ai_suggested_point_end_type && (
+                  <div className="panel-sunk mt-5 p-4">
+                    <p className="eyebrow">Claude&rsquo;s read</p>
+                    <p className="mt-2 text-[14px] leading-relaxed">
+                      <strong>{current.ai_suggested_point_end_type.replace(/_/g, ' ')}</strong> —{' '}
+                      {current.ai_suggestion_reasoning}
+                    </p>
+                  </div>
                 )}
 
-                {point.shots.length > 0 && (
-                  <div className="mt-2 overflow-x-auto">
-                    <table className="w-full text-left text-xs text-[var(--color-ink-secondary)]">
+                {current.shots.length > 0 && (
+                  <div className="mt-6 overflow-x-auto">
+                    <table className="w-full border-collapse text-left text-[13px]">
                       <thead>
-                        <tr className="text-[var(--color-ink-muted)]">
-                          <th className="pr-3 font-normal">#</th>
-                          <th className="pr-3 font-normal">Player</th>
-                          <th className="pr-3 font-normal">Type</th>
-                          <th className="pr-3 font-normal">Stroke</th>
-                          <th className="font-normal">Result</th>
+                        <tr className="border-b border-[var(--color-line)]">
+                          {['#', 'Player', 'Type', 'Stroke', 'Result'].map((h) => (
+                            <th key={h} className="eyebrow py-2 pr-4 font-normal">
+                              {h}
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {point.shots.map((s) => (
-                          <tr key={s.shot_number}>
-                            <td className="pr-3">{s.shot_number}</td>
-                            <td className="pr-3">{s.player}</td>
-                            <td className="pr-3">{s.type}</td>
-                            <td className="pr-3">{s.stroke}</td>
-                            <td>{s.result}</td>
+                        {current.shots.map((s) => (
+                          <tr
+                            key={s.shot_number}
+                            className="border-b border-[var(--color-line)] transition-colors hover:bg-[var(--color-paper-2)]"
+                          >
+                            <td className="num py-2 pr-4 text-[var(--color-dim)]">
+                              {s.shot_number}
+                            </td>
+                            <td className="py-2 pr-4">{s.player}</td>
+                            <td className="py-2 pr-4 text-[var(--color-dim)]">{s.type}</td>
+                            <td className="py-2 pr-4">{s.stroke}</td>
+                            <td className="py-2">{s.result}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -183,51 +241,89 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                   </div>
                 )}
 
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <select
-                    value={choice.endType}
-                    onChange={(e) =>
-                      setChoices((prev) => ({
-                        ...prev,
-                        [key]: { ...prev[key], endType: e.target.value },
-                      }))
-                    }
-                    className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm"
-                  >
-                    {POINT_END_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t.replace(/_/g, ' ')}
-                      </option>
-                    ))}
-                  </select>
+                {/* End type as a set of chips rather than a <select>: with
+                    seven options it's one click instead of two, and the whole
+                    vocabulary stays visible while deciding. */}
+                <div className="mt-7">
+                  <span className="field-label">How did it end?</span>
+                  <div className="flex flex-wrap gap-2">
+                    {POINT_END_TYPES.map((t) => {
+                      const on = choice.endType === t
+                      return (
+                        <button
+                          key={t}
+                          onClick={() =>
+                            setChoices((prev) => ({
+                              ...prev,
+                              [pointKey(current)]: { ...prev[pointKey(current)], endType: t },
+                            }))
+                          }
+                          className="rounded-full border px-4 py-2 text-[13px] transition-colors"
+                          style={{
+                            borderColor: on ? 'var(--color-accent)' : 'var(--color-line-strong)',
+                            background: on
+                              ? 'color-mix(in srgb, var(--color-accent) 10%, transparent)'
+                              : 'transparent',
+                            color: on ? 'var(--color-accent)' : 'var(--color-dim)',
+                          }}
+                        >
+                          {t.replace(/_/g, ' ')}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
 
-                  <label className="flex items-center gap-1.5 text-sm text-[var(--color-ink-secondary)]">
+                <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-[var(--color-line)] pt-6">
+                  <label className="flex cursor-pointer items-center gap-2.5 text-[14px]">
                     <input
                       type="checkbox"
                       checked={choice.netApproach}
                       onChange={(e) =>
                         setChoices((prev) => ({
                           ...prev,
-                          [key]: { ...prev[key], netApproach: e.target.checked },
+                          [pointKey(current)]: {
+                            ...prev[pointKey(current)],
+                            netApproach: e.target.checked,
+                          },
                         }))
                       }
+                      className="h-4 w-4 accent-[var(--color-accent)]"
                     />
-                    Net approach
+                    Came to the net
                   </label>
 
                   <button
-                    onClick={() => handleConfirm(point)}
-                    disabled={confirming === key}
-                    className="ml-auto rounded-lg bg-gradient-brand px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                    onClick={() => handleConfirm(current)}
+                    disabled={confirming === pointKey(current)}
+                    className="btn"
                   >
-                    {confirming === key ? 'Confirming…' : 'Confirm'}
+                    {confirming === pointKey(current) ? 'Confirming…' : 'Confirm point'}
+                    <span aria-hidden>&#8594;</span>
                   </button>
                 </div>
-              </div>
-            )
-          })}
+              </motion.div>
+            ) : (
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-8 border-t border-[var(--color-line)] pt-8"
+              >
+                <p className="h3" style={{ color: 'var(--color-teal)' }}>
+                  Every flagged point has a decision on it.
+                </p>
+                <p className="lede mt-3 text-[15px]">
+                  Close this and finalize the match to write it into your stats.
+                </p>
+                <button onClick={onClose} className="btn mt-6">
+                  Back to the form
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-      </GlassCard>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

@@ -1,9 +1,42 @@
 import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { api, ApiError } from '../api'
 import type { JournalFeedback, MatchStats } from '../types'
-import GlassCard from '../components/GlassCard'
+import Panel from '../components/Panel'
 import Skeleton from '../components/Skeleton'
 import StickyNote from '../components/StickyNote'
+import Reveal from '../components/Reveal'
+import Magnetic from '../components/Magnetic'
+
+/** One journal prompt: a labelled textarea with a live character count, so
+ *  the three of them read as one entry with three parts. */
+function Prompt({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (next: string) => void
+  placeholder: string
+}) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline justify-between">
+        <span className="field-label">{label}</span>
+        <span className="eyebrow num">{value.trim() ? `${value.trim().length}` : '—'}</span>
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={4}
+        placeholder={placeholder}
+        className="field resize-y leading-relaxed"
+      />
+    </label>
+  )
+}
 
 interface JournalProps {
   initialMatchId: number | null
@@ -18,6 +51,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
   const [cons, setCons] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const [feedback, setFeedback] = useState<JournalFeedback | null>(null)
@@ -47,6 +81,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
     setNotes(selected.self_assessment.notes ?? '')
     setFeedback(null)
     setCoachError(null)
+    setSaved(false)
   }, [selected])
 
   async function handleSave() {
@@ -56,6 +91,8 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
     try {
       const updated = await api.updateJournal(selected.match_id, { pros, cons, notes })
       setMatches((prev) => prev?.map((m) => (m.match_id === updated.match_id ? updated : m)) ?? null)
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 2400)
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Failed to save.')
     } finally {
@@ -79,7 +116,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
 
   if (matches === null) {
     return (
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      <div className="grid gap-8 lg:grid-cols-[300px_1fr]">
         <Skeleton className="h-96" />
         <Skeleton className="h-96" />
       </div>
@@ -88,110 +125,162 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
 
   if (matches.length === 0) {
     return (
-      <GlassCard className="p-6 text-center text-[var(--color-ink-secondary)]">
-        No matches loaded yet — head to Overview to load your first one.
-      </GlassCard>
+      <div className="border-y border-[var(--color-line)] py-14 text-center">
+        <p className="h2">No matches to write about yet.</p>
+        <p className="lede mx-auto mt-4 text-center">
+          Load one on the Overview tab and it will show up here as a card.
+        </p>
+      </div>
     )
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-      <div className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-ink-muted)]">
-          Sticky notes
-        </h2>
-        {matches.map((m) => (
-          <StickyNote
-            key={m.match_id}
-            match={m}
-            selected={m.match_id === selectedId}
-            onClick={() => setSelectedId(m.match_id)}
-          />
-        ))}
+    <div className="grid gap-10 lg:grid-cols-[300px_1fr]">
+      <div>
+        <div className="flex items-baseline justify-between border-t border-[var(--color-line)] pt-5">
+          <span className="eyebrow">The stack</span>
+          <span className="eyebrow num">{matches.length}</span>
+        </div>
+        <p className="mt-3 text-[13px] text-[var(--color-dim)]">
+          Pick a match. Cards can be pulled out of the stack — they always spring back.
+        </p>
+        <div className="mt-6 space-y-4">
+          {matches.map((m) => (
+            <StickyNote
+              key={m.match_id}
+              match={m}
+              selected={m.match_id === selectedId}
+              onClick={() => setSelectedId(m.match_id)}
+            />
+          ))}
+        </div>
       </div>
 
       {selected && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          <GlassCard className="p-6">
-            <h2 className="font-[var(--font-display)] text-lg font-bold">
-              {selected.opponent} — {selected.date}
-            </h2>
-            <div className="mt-4 space-y-4">
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">What went right</span>
-                <textarea
-                  value={pros}
-                  onChange={(e) => setPros(e.target.value)}
-                  rows={3}
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">What went wrong</span>
-                <textarea
-                  value={cons}
-                  onChange={(e) => setCons(e.target.value)}
-                  rows={3}
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Other thoughts</span>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={3}
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              {saveError && <p className="text-sm text-[var(--color-critical)]">{saveError}</p>}
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="rounded-lg bg-gradient-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {saving ? 'Saving…' : 'Save journal entry'}
-              </button>
-            </div>
-          </GlassCard>
-
-          <GlassCard className="p-6" glow={Boolean(feedback)}>
-            <h2 className="font-[var(--font-display)] text-lg font-bold">Coach's feedback</h2>
-            <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
-              Grounded in this match's stats and what you wrote above.
-            </p>
-
-            {coachError && (
-              <p className="mt-3 text-sm text-[var(--color-critical)]">{coachError}</p>
-            )}
-
-            {feedback ? (
-              <div className="mt-4 space-y-3 whitespace-pre-line text-sm leading-relaxed text-[var(--color-ink-primary)]">
-                {feedback.feedback}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={selected.match_id}
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+            className="space-y-10"
+          >
+            <div className="border-t border-[var(--color-line)] pt-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-4">
+                <h2 className="h2">{selected.opponent}</h2>
+                <span className="eyebrow num">
+                  {selected.date} &middot; {selected.result === 'W' ? 'Won' : 'Lost'}
+                </span>
               </div>
-            ) : (
-              <button
-                onClick={() => handleCoach(false)}
-                disabled={coaching}
-                className="mt-4 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-ink-secondary)] transition hover:border-[var(--color-brand-blue)] hover:text-[var(--color-ink-primary)] disabled:opacity-50"
-              >
-                {coaching
-                  ? 'Coach is reviewing…'
-                  : 'Get coaching feedback (uses a cached result if available, otherwise spends API money)'}
-              </button>
-            )}
+            </div>
 
-            {feedback && (
-              <button
-                onClick={() => handleCoach(true)}
-                disabled={coaching}
-                className="mt-4 text-xs text-[var(--color-ink-muted)] underline hover:text-[var(--color-ink-secondary)]"
-              >
-                Regenerate (spends API money)
-              </button>
-            )}
-          </GlassCard>
-        </div>
+            <div className="grid gap-10 xl:grid-cols-2">
+              <div className="space-y-6">
+                <Prompt
+                  label="What went right"
+                  value={pros}
+                  onChange={setPros}
+                  placeholder="The serve pattern that kept working, the return position that finally stuck…"
+                />
+                <Prompt
+                  label="What went wrong"
+                  value={cons}
+                  onChange={setCons}
+                  placeholder="Where the points actually got away from you."
+                />
+                <Prompt
+                  label="Other thoughts"
+                  value={notes}
+                  onChange={setNotes}
+                  placeholder="Conditions, body, nerves, anything the tracking can't see."
+                />
+
+                {saveError && (
+                  <p className="text-[14px]" style={{ color: 'var(--color-clay)' }}>
+                    {saveError}
+                  </p>
+                )}
+
+                <div className="flex items-center gap-4">
+                  <Magnetic>
+                    <button className="btn" onClick={handleSave} disabled={saving}>
+                      {saving ? 'Saving…' : 'Save entry'}
+                    </button>
+                  </Magnetic>
+                  <AnimatePresence>
+                    {saved && (
+                      <motion.span
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="eyebrow"
+                        style={{ color: 'var(--color-teal)' }}
+                      >
+                        Saved
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+
+              <Reveal>
+                <Panel spotlight className="h-full p-7">
+                  <div className="flex items-baseline justify-between gap-4">
+                    <h3 className="h3">Coach's read</h3>
+                    <span className="eyebrow">Claude</span>
+                  </div>
+                  <p className="lede mt-3 text-[14px]">
+                    Grounded in this match's confirmed stats and what you just wrote — nothing
+                    else.
+                  </p>
+
+                  {coachError && (
+                    <p className="mt-4 text-[14px]" style={{ color: 'var(--color-clay)' }}>
+                      {coachError}
+                    </p>
+                  )}
+
+                  <AnimatePresence mode="wait">
+                    {feedback ? (
+                      <motion.div
+                        key="feedback"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-6 whitespace-pre-line border-t border-[var(--color-line)] pt-6 text-[15px] leading-[1.7]"
+                      >
+                        {feedback.feedback}
+                      </motion.div>
+                    ) : (
+                      <motion.div key="ask" exit={{ opacity: 0 }} className="mt-6">
+                        <button
+                          className="btn btn-ghost"
+                          onClick={() => handleCoach(false)}
+                          disabled={coaching}
+                        >
+                          {coaching ? 'Reading the match…' : 'Ask the coach'}
+                        </button>
+                        <p className="mt-3 text-[12px] text-[var(--color-dim)]">
+                          Uses a cached read if one exists; otherwise this spends API credit.
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {feedback && (
+                    <button
+                      onClick={() => handleCoach(true)}
+                      disabled={coaching}
+                      className="link mt-6 text-[12px] text-[var(--color-dim)]"
+                    >
+                      Regenerate (spends API credit)
+                    </button>
+                  )}
+                </Panel>
+              </Reveal>
+            </div>
+          </motion.div>
+        </AnimatePresence>
       )}
     </div>
   )

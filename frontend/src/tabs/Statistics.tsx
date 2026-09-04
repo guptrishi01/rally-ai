@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import {
   Bar,
   BarChart,
@@ -12,20 +13,50 @@ import {
 } from 'recharts'
 import { api } from '../api'
 import type { MatchStats } from '../types'
-import GlassCard from '../components/GlassCard'
 import Skeleton from '../components/Skeleton'
 import StatTile from '../components/StatTile'
+import Reveal from '../components/Reveal'
 
 // Lazy: three.js/@react-three/fiber only load once someone actually views
 // the Statistics tab, keeping the rest of the app's bundle unaffected.
 const ShotMap = lazy(() => import('../components/ShotMap'))
 
-const AXIS_STYLE = { fontSize: 12, fill: 'var(--color-ink-muted)' }
-const TOOLTIP_STYLE = {
-  background: 'var(--color-surface-raised)',
-  border: '1px solid var(--color-border)',
-  borderRadius: 8,
-  fontSize: 12,
+const AXIS_STYLE = {
+  fontSize: 11,
+  fill: 'var(--color-dim)',
+  fontFamily: 'var(--font-mono)',
+}
+
+/** Recharts' default tooltip is a white box with a grey border; this one is
+ *  the same paper card the rest of the page uses. */
+function PaperTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean
+  payload?: { name?: string; value?: number | string; color?: string }[]
+  label?: string | number
+}) {
+  if (!active || !payload || payload.length === 0) return null
+  return (
+    <div className="panel px-3.5 py-2.5 shadow-sm">
+      {label !== undefined && <p className="eyebrow num">{label}</p>}
+      <div className="mt-1.5 space-y-1">
+        {payload.map((entry, i) => (
+          <p key={i} className="flex items-baseline gap-3 text-[13px]">
+            <span
+              aria-hidden
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ background: entry.color }}
+            />
+            <span className="text-[var(--color-dim)]">{entry.name}</span>
+            <span className="num ml-auto text-[var(--color-ink)]">{entry.value}</span>
+          </p>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function Statistics() {
@@ -45,8 +76,8 @@ export default function Statistics() {
       (matches ?? []).map((m) => ({
         date: m.date,
         opponent: m.opponent,
-        'PW%': m.point_outcomes.points_won_pct,
-        'FS%': m.serving.first_serve_pct,
+        'Points won %': m.point_outcomes.points_won_pct,
+        'First serve %': m.serving.first_serve_pct,
       })),
     [matches],
   )
@@ -55,9 +86,9 @@ export default function Statistics() {
 
   const servingBars = selected
     ? [
-        { name: 'FS%', value: selected.serving.first_serve_pct },
-        { name: 'SS%', value: selected.serving.second_serve_pct },
-        { name: 'Hold%', value: selected.serving.service_hold_pct },
+        { name: 'First serve', value: selected.serving.first_serve_pct },
+        { name: 'Second serve', value: selected.serving.second_serve_pct },
+        { name: 'Holds', value: selected.serving.service_hold_pct },
       ]
     : []
 
@@ -73,7 +104,7 @@ export default function Statistics() {
 
   if (matches === null) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-8">
         <Skeleton className="h-72" />
         <Skeleton className="h-96" />
       </div>
@@ -82,138 +113,223 @@ export default function Statistics() {
 
   if (matches.length === 0) {
     return (
-      <GlassCard className="p-6 text-center text-[var(--color-ink-secondary)]">
-        No matches loaded yet — head to Overview to load your first one.
-      </GlassCard>
+      <div className="border-y border-[var(--color-line)] py-14 text-center">
+        <p className="h2">Nothing to chart yet.</p>
+        <p className="lede mx-auto mt-4 text-center">
+          Statistics fill in as soon as your first match is finalized.
+        </p>
+      </div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      <GlassCard className="p-6">
-        <h2 className="font-[var(--font-display)] text-lg font-bold">Trends across matches</h2>
-        <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
-          Points-won % and first-serve % over time.
-        </p>
-        <div className="mt-4 h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={trendData}>
-              <CartesianGrid stroke="var(--color-border-soft)" vertical={false} />
-              <XAxis dataKey="date" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
-              <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={36} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
-              <Line
-                type="monotone"
-                dataKey="PW%"
-                stroke="var(--color-sequential)"
-                strokeWidth={2}
-                dot={{ r: 3 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="FS%"
-                stroke="var(--color-categorical-2)"
-                strokeWidth={2}
-                dot={{ r: 3 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </GlassCard>
+    <div className="space-y-16">
+      <section>
+        <Reveal>
+          <div className="flex items-baseline justify-between gap-6 border-t border-[var(--color-line)] pt-6">
+            <h2 className="h2">Across the season</h2>
+            <span className="eyebrow num">{matches.length} matches</span>
+          </div>
+          <p className="lede mt-4 text-[15px]">
+            Points won and first serves in, match by match. Hover any point to read the pair.
+          </p>
+        </Reveal>
 
-      <GlassCard className="p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-[var(--font-display)] text-lg font-bold">Match breakdown</h2>
-          <select
-            value={selectedId ?? ''}
-            onChange={(e) => setSelectedId(Number(e.target.value))}
-            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm"
-          >
-            {matches
-              .slice()
-              .reverse()
-              .map((m) => (
-                <option key={m.match_id} value={m.match_id}>
-                  {m.date} vs {m.opponent} ({m.result})
-                </option>
-              ))}
-          </select>
-        </div>
+        <Reveal delay={0.05}>
+          {/* Direct legend rather than Recharts' <Legend>, so the two series
+              are named in the page's own type instead of the library's. */}
+          <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2">
+            {[
+              { name: 'Points won %', color: 'var(--color-blue)' },
+              { name: 'First serve %', color: 'var(--color-accent)' },
+            ].map((s) => (
+              <span key={s.name} className="eyebrow flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                {s.name}
+              </span>
+            ))}
+          </div>
+          <div className="mt-5 h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendData} margin={{ top: 8, right: 26, bottom: 0, left: -18 }}>
+                <CartesianGrid stroke="var(--color-line)" vertical={false} />
+                <XAxis dataKey="date" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
+                <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={46} />
+                <Tooltip
+                  content={<PaperTooltip />}
+                  cursor={{ stroke: 'var(--color-line-strong)', strokeDasharray: '3 3' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Points won %"
+                  stroke="var(--color-blue)"
+                  strokeWidth={1.75}
+                  dot={{ r: 2.5, strokeWidth: 0, fill: 'var(--color-blue)' }}
+                  activeDot={{ r: 5 }}
+                  animationDuration={1100}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="First serve %"
+                  stroke="var(--color-accent)"
+                  strokeWidth={1.75}
+                  dot={{ r: 2.5, strokeWidth: 0, fill: 'var(--color-accent)' }}
+                  activeDot={{ r: 5 }}
+                  animationDuration={1100}
+                  animationBegin={180}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Reveal>
+      </section>
+
+      <section>
+        <Reveal>
+          <div className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--color-line)] pt-6">
+            <h2 className="h2">One match, in full</h2>
+            <select
+              value={selectedId ?? ''}
+              onChange={(e) => setSelectedId(Number(e.target.value))}
+              className="field num w-auto"
+            >
+              {matches
+                .slice()
+                .reverse()
+                .map((m) => (
+                  <option key={m.match_id} value={m.match_id}>
+                    {m.date} · {m.opponent} ({m.result})
+                  </option>
+                ))}
+            </select>
+          </div>
+        </Reveal>
 
         {selected && (
-          <div className="mt-5 space-y-6">
-            <div className="grid gap-4 sm:grid-cols-3">
-              <StatTile label="Points won" value={`${selected.point_outcomes.points_won_pct}%`} />
-              <StatTile
-                label="Break point conv."
-                value={`${selected.receiving.break_point_conversion_pct}%`}
-              />
-              <StatTile label="Net success" value={`${selected.net.net_success_pct}%`} />
-              <StatTile
-                label="Aces / DFs"
-                value={`${selected.serving.aces} / ${selected.serving.double_faults}`}
-              />
-              <StatTile label="W/UE ratio" value={`${selected.point_outcomes.winner_to_ue_ratio}`} />
-              <StatTile
-                label="Deuce conversion"
-                value={`${selected.clutch.deuce_conversion_pct}%`}
-              />
-            </div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={selected.match_id}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+              className="mt-10 space-y-12"
+            >
+              <div className="grid grid-cols-2 gap-x-8 gap-y-10 lg:grid-cols-3">
+                <StatTile
+                  label="Points won"
+                  value={selected.point_outcomes.points_won_pct}
+                  suffix="%"
+                  decimals={1}
+                />
+                <StatTile
+                  label="Break points converted"
+                  value={selected.receiving.break_point_conversion_pct}
+                  suffix="%"
+                  decimals={1}
+                  delay={0.05}
+                />
+                <StatTile
+                  label="Net success"
+                  value={selected.net.net_success_pct}
+                  suffix="%"
+                  decimals={1}
+                  delay={0.1}
+                />
+                <StatTile
+                  label="Aces / double faults"
+                  value={`${selected.serving.aces} / ${selected.serving.double_faults}`}
+                  delay={0.15}
+                />
+                <StatTile
+                  label="Winner : unforced"
+                  value={selected.point_outcomes.winner_to_ue_ratio}
+                  decimals={2}
+                  delay={0.2}
+                />
+                <StatTile
+                  label="Deuces converted"
+                  value={selected.clutch.deuce_conversion_pct}
+                  suffix="%"
+                  decimals={1}
+                  delay={0.25}
+                />
+              </div>
 
-            <div className="grid gap-6 lg:grid-cols-2">
-              <div>
-                <h3 className="text-sm font-semibold text-[var(--color-ink-secondary)]">
-                  Serving
-                </h3>
-                <div className="mt-2 h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={servingBars}>
-                      <CartesianGrid stroke="var(--color-border-soft)" vertical={false} />
-                      <XAxis dataKey="name" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
-                      <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={36} />
-                      <Tooltip contentStyle={TOOLTIP_STYLE} />
-                      <Bar dataKey="value" fill="var(--color-sequential)" radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+              <div className="grid gap-10 lg:grid-cols-2">
+                <div>
+                  <p className="eyebrow border-t border-[var(--color-line)] pt-5">Serving</p>
+                  <div className="mt-5 h-60">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={servingBars} margin={{ top: 8, right: 8, left: -18 }}>
+                        <CartesianGrid stroke="var(--color-line)" vertical={false} />
+                        <XAxis dataKey="name" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
+                        <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={46} />
+                        <Tooltip
+                          content={<PaperTooltip />}
+                          cursor={{ fill: 'color-mix(in srgb, var(--color-accent) 7%, transparent)' }}
+                        />
+                        <Bar
+                          dataKey="value"
+                          name="Percent"
+                          fill="var(--color-blue)"
+                          radius={[3, 3, 0, 0]}
+                          maxBarSize={56}
+                          animationDuration={900}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div>
+                  <p className="eyebrow border-t border-[var(--color-line)] pt-5">
+                    How points ended
+                  </p>
+                  <div className="mt-5 h-60">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={outcomeBars} margin={{ top: 8, right: 8, left: -18 }}>
+                        <CartesianGrid stroke="var(--color-line)" vertical={false} />
+                        <XAxis dataKey="name" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
+                        <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={46} />
+                        <Tooltip
+                          content={<PaperTooltip />}
+                          cursor={{ fill: 'color-mix(in srgb, var(--color-accent) 7%, transparent)' }}
+                        />
+                        <Bar
+                          dataKey="value"
+                          name="Points"
+                          fill="var(--color-accent)"
+                          radius={[3, 3, 0, 0]}
+                          maxBarSize={56}
+                          animationDuration={900}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               </div>
-              <div>
-                <h3 className="text-sm font-semibold text-[var(--color-ink-secondary)]">
-                  Point outcomes
-                </h3>
-                <div className="mt-2 h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={outcomeBars}>
-                      <CartesianGrid stroke="var(--color-border-soft)" vertical={false} />
-                      <XAxis dataKey="name" tick={AXIS_STYLE} axisLine={false} tickLine={false} />
-                      <YAxis tick={AXIS_STYLE} axisLine={false} tickLine={false} width={36} />
-                      <Tooltip contentStyle={TOOLTIP_STYLE} />
-                      <Bar
-                        dataKey="value"
-                        fill="var(--color-categorical-2)"
-                        radius={[6, 6, 0, 0]}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-          </div>
+            </motion.div>
+          </AnimatePresence>
         )}
-      </GlassCard>
+      </section>
 
-      <GlassCard className="p-6">
-        <h2 className="font-[var(--font-display)] text-lg font-bold">Shot Map</h2>
-        <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
-          Every tracked shot across your matches, projected into 3D — green points belong to
-          rallies you won, red to ones you lost. Grows as you load more matches.
-        </p>
-        <div className="mt-4">
-          <Suspense fallback={<Skeleton className="h-96" />}>
+      <section>
+        <Reveal>
+          <div className="border-t border-[var(--color-line)] pt-6">
+            <h2 className="h2">Shot map</h2>
+            <p className="lede mt-4 text-[15px]">
+              Every tracked shot across your matches, projected into three dimensions — teal
+              belongs to rallies you won, terracotta to ones you lost. Drag to turn it, scroll to
+              zoom.
+            </p>
+          </div>
+        </Reveal>
+        <div className="mt-8">
+          <Suspense fallback={<Skeleton className="h-[420px]" />}>
             <ShotMap />
           </Suspense>
         </div>
-      </GlassCard>
+      </section>
     </div>
   )
 }

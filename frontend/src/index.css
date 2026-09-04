@@ -1,93 +1,354 @@
 @import 'tailwindcss';
 
+/* ---------------------------------------------------------------------------
+   RallyAI design system - warm paper, editorial serif, hairline rules.
+
+   Light-first on purpose: this is a reading surface (stats, journal entries,
+   coaching prose), not a control room. The whole palette is a warm neutral
+   stack plus exactly three chromatic accents, so color always means something
+   (terracotta = action, teal = good, blue = data) instead of decorating.
+--------------------------------------------------------------------------- */
+
 @theme {
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-display: 'Manrope', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: 'Fraunces', ui-serif, Georgia, 'Times New Roman', serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* Surfaces - dark-first, matching reports/palette.py's dark tokens in spirit
-     but extended into a richer, layered dashboard surface stack. */
-  --color-page: #0a0a0f;
-  --color-surface: #14141c;
-  --color-surface-raised: #1b1b26;
-  --color-border: #2a2a38;
-  --color-border-soft: #21212d;
+  /* Paper stack - the four surfaces, warmest at the back. */
+  --color-paper: #f4f1ea;
+  --color-paper-2: #efeadd;
+  --color-paper-3: #fbf8f0;
+  --color-paper-sink: #e7decb;
 
-  --color-ink-primary: #f5f5f8;
-  --color-ink-secondary: #b4b4c4;
-  --color-ink-muted: #7d7d90;
+  /* Ink stack. */
+  --color-ink: #0b1515;
+  --color-ink-2: #23201b;
+  --color-dim: #7d756a;
+  --color-faint: #b3aa99;
 
-  /* Lifted verbatim from reports/palette.py's dark tokens, so the SPA and
-     the standalone downloadable report read as one system. */
-  --color-sequential: #3987e5;
-  --color-categorical-2: #d95926;
-  --color-good: #16c95f;
-  --color-critical: #f0475a;
+  /* Hairlines - this design leans on rules, not boxes and shadows. */
+  --color-line: #e7decb;
+  --color-line-strong: #dad3c4;
 
-  /* Vibrant accent trio for CTAs / highlight badges - the "modern, vibrant"
-     layer the dataviz palette alone doesn't cover. */
-  --color-brand-violet: #8b5cf6;
-  --color-brand-blue: #3987e5;
-  --color-brand-cyan: #22d3ee;
+  /* Accents. Exactly three, each with one job. */
+  --color-accent: #bc5b45; /* terracotta - actions, the live/primary state */
+  --color-accent-deep: #b65440;
+  --color-blue: #2e5fa8; /* data series, links */
+  --color-teal: #1e9e8a; /* good / won / confirmed */
+  --color-clay: #b65440; /* critical / lost - the accent's deeper twin */
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
+  --wrap: 1240px;
+  --gutter: clamp(20px, 4vw, 64px);
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--color-page);
-  color: var(--color-ink-primary);
+  background: var(--color-paper);
+  color: var(--color-ink);
   font-family: var(--font-sans);
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-@layer utilities {
-  .text-gradient {
-    background-image: linear-gradient(
-      90deg,
-      var(--color-brand-violet),
-      var(--color-brand-blue) 55%,
-      var(--color-brand-cyan)
-    );
-    background-clip: text;
-    -webkit-background-clip: text;
-    color: transparent;
-  }
-
-  .bg-gradient-brand {
-    background-image: linear-gradient(
-      100deg,
-      var(--color-brand-violet),
-      var(--color-brand-blue) 60%,
-      var(--color-brand-cyan)
-    );
-  }
-
-  .glass-card {
-    background: color-mix(in srgb, var(--color-surface-raised) 88%, transparent);
-    border: 1px solid var(--color-border-soft);
-    backdrop-filter: blur(16px);
-  }
-
-  .glow-violet {
-    box-shadow: 0 0 60px -15px color-mix(in srgb, var(--color-brand-violet) 55%, transparent);
-  }
+/* A very faint paper tooth. Pure CSS, no image request - it keeps large
+   flat cream areas from reading as "unstyled white". */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: radial-gradient(circle at 1px 1px, #0b151508 1px, transparent 0);
+  background-size: 4px 4px;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-brand-blue) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
-
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--color-paper-2);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border: 3px solid var(--color-paper-2);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-faint);
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 999px;
+@layer components {
+  /* Page rhythm ------------------------------------------------------- */
+  .wrap {
+    width: 100%;
+    max-width: var(--wrap);
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+  }
+
+  /* Typography -------------------------------------------------------- */
+  .display {
+    font-family: var(--font-serif);
+    font-weight: 440;
+    font-size: clamp(38px, 5.4vw, 76px);
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    font-variation-settings: 'opsz' 120;
+  }
+
+  .h2 {
+    font-family: var(--font-serif);
+    font-weight: 450;
+    font-size: clamp(26px, 2.9vw, 40px);
+    line-height: 1.06;
+    letter-spacing: -0.015em;
+    font-variation-settings: 'opsz' 60;
+  }
+
+  .h3 {
+    font-family: var(--font-serif);
+    font-weight: 480;
+    font-size: clamp(19px, 1.6vw, 23px);
+    line-height: 1.16;
+    letter-spacing: -0.01em;
+  }
+
+  .lede {
+    font-size: clamp(15px, 1.15vw, 18px);
+    line-height: 1.6;
+    color: var(--color-dim);
+    max-width: 56ch;
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+  }
+
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  /* Surfaces ---------------------------------------------------------- */
+  .panel {
+    position: relative;
+    background: var(--color-paper-3);
+    border: 1px solid var(--color-line);
+    border-radius: 14px;
+  }
+
+  .panel-sunk {
+    background: var(--color-paper-2);
+    border: 1px solid var(--color-line);
+    border-radius: 14px;
+  }
+
+  .rule {
+    border: 0;
+    border-top: 1px solid var(--color-line);
+  }
+
+  /* Controls ---------------------------------------------------------- */
+  .field {
+    width: 100%;
+    background: var(--color-paper);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 9px;
+    padding: 9px 12px;
+    font-size: 14px;
+    color: var(--color-ink);
+    transition:
+      border-color 0.18s ease,
+      background 0.18s ease;
+  }
+  .field:hover {
+    border-color: var(--color-faint);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    background: var(--color-paper-3);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .field::placeholder {
+    color: var(--color-faint);
+  }
+
+  .field-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    margin-bottom: 7px;
+  }
+
+  /* The primary action: a filled terracotta pill, straight from the
+     reference site's CTA treatment. */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px 24px;
+    border-radius: 999px;
+    background: var(--color-accent);
+    color: #f7f3ea;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition:
+      background 0.2s ease,
+      color 0.2s ease,
+      border-color 0.2s ease;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--color-accent-deep);
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--color-ink);
+    border-color: var(--color-line-strong);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--color-paper-2);
+    border-color: var(--color-faint);
+  }
+
+  .btn-sm {
+    padding: 8px 16px;
+    font-size: 11px;
+  }
+
+  /* An inline text link that draws its own underline on hover. */
+  .link {
+    color: var(--color-ink);
+    text-decoration: none;
+    background-image: linear-gradient(var(--color-accent), var(--color-accent));
+    background-size: 0% 1px;
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    transition: background-size 0.28s var(--ease-out-expo);
+  }
+  .link:hover {
+    background-size: 100% 1px;
+  }
+}
+
+@layer utilities {
+  /* The cursor-tracked highlight TiltCard paints; declared here so the
+     gradient stays in CSS rather than being rebuilt in JS on every frame. */
+  .spotlight::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    background: radial-gradient(
+      340px circle at var(--mx, 50%) var(--my, 50%),
+      color-mix(in srgb, var(--color-accent) 9%, transparent),
+      transparent 68%
+    );
+  }
+  .spotlight:hover::after {
+    opacity: 1;
+  }
+
+  .above-grain {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Marquee: CSS-driven so hover can pause it and the reduced-motion block
+     below stops it, neither of which a JS animation would honour for free. */
+  .marquee-track {
+    animation-name: marquee-slide;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+  .marquee:hover .marquee-track {
+    animation-play-state: paused;
+  }
+  @keyframes marquee-slide {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  /* The skeleton shimmer, warm rather than the default grey pulse. */
+  .shimmer {
+    background: linear-gradient(
+      100deg,
+      var(--color-paper-2) 30%,
+      var(--color-paper-3) 50%,
+      var(--color-paper-2) 70%
+    );
+    background-size: 220% 100%;
+    animation: shimmer-slide 1.5s linear infinite;
+  }
+  @keyframes shimmer-slide {
+    from {
+      background-position: 180% 0;
+    }
+    to {
+      background-position: -80% 0;
+    }
+  }
+}
+
+/* Anything that moves does so because the user asked to see something, not
+   for decoration - so honouring the OS setting costs nothing. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

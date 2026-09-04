@@ -5,13 +5,15 @@ import { api } from '../api'
 import type { ShotPoint } from '../types'
 import Skeleton from './Skeleton'
 
-const COLOR_WON = '#16c95f'
-const COLOR_LOST = '#f0475a'
+const COLOR_WON = '#1e9e8a'
+const COLOR_LOST = '#bc5b45'
 const SCENE_RADIUS = 4.5
+
+type PlacedShot = { x: number; y: number; z: number; point_won: boolean; label: string }
 
 /** Rescales every axis independently into [-SCENE_RADIUS, SCENE_RADIUS], so
  * PCA's arbitrary output scale always fills the same visible cube. */
-function normalize(points: ShotPoint[]): { x: number; y: number; z: number; point_won: boolean; label: string }[] {
+function normalize(points: ShotPoint[]): PlacedShot[] {
   if (points.length === 0) return []
   const axis = (pick: (p: ShotPoint) => number) => {
     const values = points.map(pick)
@@ -32,16 +34,39 @@ function normalize(points: ShotPoint[]): { x: number; y: number; z: number; poin
   }))
 }
 
-function Shots({ points }: { points: ReturnType<typeof normalize> }) {
+/**
+ * The point cloud. Each shot reports what it is on hover (to an HTML readout
+ * outside the canvas rather than a 3D label, which would need a font atlas
+ * and would fight the camera for legibility), and swells slightly while
+ * hovered so it's clear which one is being described.
+ */
+function Shots({
+  points,
+  hovered,
+  onHover,
+}: {
+  points: PlacedShot[]
+  hovered: number | null
+  onHover: (index: number | null) => void
+}) {
   return (
     <>
       {points.map((p, i) => (
-        <mesh key={i} position={[p.x, p.y, p.z]}>
-          <sphereGeometry args={[0.09, 12, 12]} />
+        <mesh
+          key={i}
+          position={[p.x, p.y, p.z]}
+          scale={hovered === i ? 1.9 : 1}
+          onPointerOver={(event) => {
+            event.stopPropagation()
+            onHover(i)
+          }}
+          onPointerOut={() => onHover(null)}
+        >
+          <sphereGeometry args={[0.085, 14, 14]} />
           <meshStandardMaterial
             color={p.point_won ? COLOR_WON : COLOR_LOST}
-            emissive={p.point_won ? COLOR_WON : COLOR_LOST}
-            emissiveIntensity={0.5}
+            roughness={0.45}
+            metalness={0.05}
           />
         </mesh>
       ))}
@@ -51,6 +76,8 @@ function Shots({ points }: { points: ReturnType<typeof normalize> }) {
 
 export default function ShotMap() {
   const [raw, setRaw] = useState<ShotPoint[] | null>(null)
+  const [hovered, setHovered] = useState<number | null>(null)
+  const [spinning, setSpinning] = useState(true)
 
   useEffect(() => {
     api.shotEmbeddings().then(setRaw)
@@ -59,44 +86,78 @@ export default function ShotMap() {
   const points = useMemo(() => normalize(raw ?? []), [raw])
 
   if (raw === null) {
-    return <Skeleton className="h-96" />
+    return <Skeleton className="h-[420px]" />
   }
 
   if (points.length === 0) {
     return (
-      <p className="rounded-xl border border-[var(--color-border-soft)] p-6 text-center text-sm text-[var(--color-ink-secondary)]">
-        Not enough shot data yet to plot — this fills in as you load matches with footage.
-      </p>
+      <div className="panel-sunk p-10 text-center">
+        <p className="text-[15px] text-[var(--color-dim)]">
+          Not enough shot data to plot yet — this fills in as you load matches.
+        </p>
+      </div>
     )
   }
 
   return (
     <div>
-      <div className="h-96 overflow-hidden rounded-xl border border-[var(--color-border-soft)] bg-black/20">
+      <div
+        className="relative h-[420px] overflow-hidden rounded-[14px] border border-[var(--color-line)]"
+        style={{ background: 'var(--color-paper-2)' }}
+      >
         <Canvas camera={{ position: [7, 6, 9], fov: 50 }}>
-          <ambientLight intensity={0.6} />
-          <pointLight position={[10, 10, 10]} intensity={60} />
+          <ambientLight intensity={1.5} />
+          <directionalLight position={[6, 10, 6]} intensity={1.6} />
           <Grid
             args={[SCENE_RADIUS * 2.4, SCENE_RADIUS * 2.4]}
             position={[0, -SCENE_RADIUS - 0.5, 0]}
-            cellColor="#2a2a38"
-            sectionColor="#3a3a4a"
-            fadeDistance={30}
+            cellColor="#dad3c4"
+            sectionColor="#b3aa99"
+            fadeDistance={34}
           />
-          <Shots points={points} />
-          <OrbitControls enableDamping dampingFactor={0.08} autoRotate autoRotateSpeed={0.6} />
+          <Shots points={points} hovered={hovered} onHover={setHovered} />
+          <OrbitControls
+            enableDamping
+            dampingFactor={0.08}
+            autoRotate={spinning}
+            autoRotateSpeed={0.55}
+            onStart={() => setSpinning(false)}
+          />
         </Canvas>
+
+        {/* Readout, pinned rather than following the pointer: a tooltip that
+            chases the cursor across a rotating scene is unreadable. */}
+        <div className="pointer-events-none absolute left-4 top-4 max-w-[70%]">
+          <span
+            className="eyebrow block transition-opacity duration-200"
+            style={{ opacity: hovered === null ? 0 : 1 }}
+          >
+            {hovered === null ? ' ' : points[hovered].label}
+          </span>
+        </div>
+
+        {!spinning && (
+          <button
+            onClick={() => setSpinning(true)}
+            className="btn btn-ghost btn-sm absolute bottom-4 right-4 bg-[var(--color-paper)]"
+          >
+            Resume spin
+          </button>
+        )}
       </div>
-      <div className="mt-3 flex items-center gap-4 text-xs text-[var(--color-ink-secondary)]">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR_WON }} />
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <span className="eyebrow flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full" style={{ background: COLOR_WON }} />
           Point won
         </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR_LOST }} />
+        <span className="eyebrow flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full" style={{ background: COLOR_LOST }} />
           Point lost
         </span>
-        <span className="ml-auto">{points.length} shots · drag to rotate, scroll to zoom</span>
+        <span className="eyebrow num ml-auto">
+          {points.length} shots &middot; drag to rotate, scroll to zoom
+        </span>
       </div>
     </div>
   )

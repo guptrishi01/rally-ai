@@ -1,17 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
 import { api, ApiError } from '../api'
 import type { CareerStats, ImportResult, PendingDetail } from '../types'
-import GlassCard from '../components/GlassCard'
+import Panel from '../components/Panel'
 import StatTile from '../components/StatTile'
 import Skeleton from '../components/Skeleton'
 import ReviewModal from '../components/ReviewModal'
 import TennisBallProgress from '../components/TennisBallProgress'
+import Reveal from '../components/Reveal'
+import Magnetic from '../components/Magnetic'
+import Marquee from '../components/Marquee'
+import Dropzone from '../components/Dropzone'
+import PartPairing from '../components/PartPairing'
 
 type Phase = 'idle' | 'uploading' | 'reviewing' | 'ready' | 'finalizing' | 'done'
 
 interface OverviewProps {
   onMatchFinalized: (matchId: number) => void
+}
+
+/** A numbered rule + title, the section opener used down the whole page. */
+function SectionHead({ index, title, lede }: { index: string; title: string; lede?: string }) {
+  return (
+    <div className="border-t border-[var(--color-line)] pt-6">
+      <div className="flex items-baseline justify-between gap-6">
+        <h2 className="h2 max-w-[20ch]">{title}</h2>
+        <span className="eyebrow num shrink-0">{index}</span>
+      </div>
+      {lede && <p className="lede mt-4 text-[15px]">{lede}</p>}
+    </div>
+  )
 }
 
 export default function Overview({ onMatchFinalized }: OverviewProps) {
@@ -23,6 +41,14 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
   const [pendingDetail, setPendingDetail] = useState<PendingDetail | null>(null)
   const [finalizedMatchId, setFinalizedMatchId] = useState<number | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  // Bumped on reset: remounting the form is what clears the dropzones' own
+  // filename state, which a plain form.reset() can't reach.
+  const [formKey, setFormKey] = useState(0)
+  // Mirrors of what's currently selected in the two dropzones, purely so
+  // the pairing preview can react as files are picked - the inputs
+  // themselves still own the files, and FormData still reads them.
+  const [exportNames, setExportNames] = useState<string[]>([])
+  const [videoNames, setVideoNames] = useState<string[]>([])
   const formRef = useRef<HTMLFormElement>(null)
 
   async function loadOverview() {
@@ -47,10 +73,16 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
     // than re-staging the same match a second time.
     if (phase !== 'idle') return
     if (!formRef.current) return
+    const data = new FormData(formRef.current)
+    const exports = data.getAll('xlsx_files').filter((f) => f instanceof File && f.size > 0)
+    if (exports.length === 0) {
+      setFormError('Add at least one SwingVision .xlsx export before staging.')
+      return
+    }
     setFormError(null)
     setPhase('uploading')
     try {
-      const result = await api.importMatch(new FormData(formRef.current))
+      const result = await api.importMatch(data)
       setImportResult(result)
       if (result.flags.length > 0) {
         const detail = await api.pendingDetail(result.json_filename)
@@ -81,45 +113,53 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
   }
 
   function resetForm() {
-    formRef.current?.reset()
     setImportResult(null)
     setPendingDetail(null)
     setFinalizedMatchId(null)
     setFormError(null)
     setPhase('idle')
+    setExportNames([])
+    setVideoNames([])
+    setFormKey((k) => k + 1)
   }
 
-  return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="font-[var(--font-display)] text-3xl font-extrabold">
-          Welcome back to <span className="text-gradient">RallyAI</span>
-        </h1>
-        <p className="mt-1 text-[var(--color-ink-secondary)]">
-          Your career at a glance, and the fastest way to log a new match.
-        </p>
-      </section>
+  const hasMatches = Boolean(overview && overview.total_matches > 0)
 
+  const tickerItems =
+    overview && hasMatches
+      ? [
+          `${overview.wins} won`,
+          `${overview.losses} lost`,
+          `${overview.win_pct}% win rate`,
+          `${overview.avg_first_serve_pct}% first serves in`,
+          `${overview.avg_points_won_pct}% of points won`,
+          `${overview.total_matches} matches on record`,
+        ]
+      : []
+
+  return (
+    <div className="space-y-16">
       {loadingOverview ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-24" />
+            <Skeleton key={i} className="h-28" />
           ))}
         </div>
-      ) : overview && overview.total_matches > 0 ? (
-        <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      ) : hasMatches && overview ? (
+        <section className="space-y-10">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-10 sm:grid-cols-3 lg:grid-cols-5">
             <StatTile
               label="Record"
               value={`${overview.wins}–${overview.losses}`}
               sublabel={`${overview.total_matches} matches`}
-              accent="brand"
             />
             <StatTile
-              label="Win %"
-              value={`${overview.win_pct}%`}
+              label="Win rate"
+              value={overview.win_pct}
+              suffix="%"
+              decimals={1}
               accent={overview.win_pct >= 50 ? 'good' : 'critical'}
-              delay={0.04}
+              delay={0.05}
             />
             <StatTile
               label="Current streak"
@@ -128,253 +168,295 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   ? `${overview.current_streak_count}${overview.current_streak_result}`
                   : '—'
               }
-              sublabel={overview.current_streak_result === 'W' ? 'wins in a row' : 'losses in a row'}
-              accent={overview.current_streak_result === 'W' ? 'good' : 'critical'}
-              delay={0.08}
+              sublabel={
+                overview.current_streak_result === 'W'
+                  ? 'wins in a row'
+                  : overview.current_streak_result === 'L'
+                    ? 'losses in a row'
+                    : undefined
+              }
+              accent={
+                overview.current_streak_result === 'W'
+                  ? 'good'
+                  : overview.current_streak_result === 'L'
+                    ? 'critical'
+                    : 'ink'
+              }
+              delay={0.1}
             />
             <StatTile
-              label="Avg first serve %"
-              value={`${overview.avg_first_serve_pct}%`}
-              delay={0.12}
+              label="First serve"
+              value={overview.avg_first_serve_pct}
+              suffix="%"
+              decimals={1}
+              sublabel="match average"
+              delay={0.15}
             />
             <StatTile
-              label="Avg points won %"
-              value={`${overview.avg_points_won_pct}%`}
-              delay={0.16}
+              label="Points won"
+              value={overview.avg_points_won_pct}
+              suffix="%"
+              decimals={1}
+              sublabel="match average"
+              delay={0.2}
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <Marquee items={tickerItems} />
+
+          <div className="grid gap-6 sm:grid-cols-2">
             {overview.best_match_by_points_won_pct && (
-              <GlassCard className="p-5" glow>
-                <p className="text-xs font-medium uppercase tracking-wider text-[var(--color-ink-muted)]">
-                  🏆 {overview.best_match_by_points_won_pct.label}
-                </p>
-                <p className="mt-1 font-[var(--font-display)] text-xl font-bold">
-                  {overview.best_match_by_points_won_pct.value}% vs{' '}
-                  {overview.best_match_by_points_won_pct.opponent}
-                </p>
-                <p className="text-sm text-[var(--color-ink-secondary)]">
-                  {overview.best_match_by_points_won_pct.date}
-                </p>
-              </GlassCard>
+              <Reveal>
+                <Panel tilt spotlight className="h-full p-7">
+                  <p className="eyebrow">{overview.best_match_by_points_won_pct.label}</p>
+                  <p className="h2 mt-4">
+                    <span className="num">{overview.best_match_by_points_won_pct.value}%</span>
+                  </p>
+                  <p className="mt-3 text-[15px] text-[var(--color-dim)]">
+                    versus {overview.best_match_by_points_won_pct.opponent}
+                    <span className="num ml-2 text-[13px]">
+                      {overview.best_match_by_points_won_pct.date}
+                    </span>
+                  </p>
+                </Panel>
+              </Reveal>
             )}
             {overview.most_aces_in_a_match && (
-              <GlassCard className="p-5" glow>
-                <p className="text-xs font-medium uppercase tracking-wider text-[var(--color-ink-muted)]">
-                  🎯 {overview.most_aces_in_a_match.label}
-                </p>
-                <p className="mt-1 font-[var(--font-display)] text-xl font-bold">
-                  {overview.most_aces_in_a_match.value} aces vs{' '}
-                  {overview.most_aces_in_a_match.opponent}
-                </p>
-                <p className="text-sm text-[var(--color-ink-secondary)]">
-                  {overview.most_aces_in_a_match.date}
-                </p>
-              </GlassCard>
+              <Reveal delay={0.08}>
+                <Panel tilt spotlight className="h-full p-7">
+                  <p className="eyebrow">{overview.most_aces_in_a_match.label}</p>
+                  <p className="h2 mt-4">
+                    <span className="num">{overview.most_aces_in_a_match.value}</span> aces
+                  </p>
+                  <p className="mt-3 text-[15px] text-[var(--color-dim)]">
+                    versus {overview.most_aces_in_a_match.opponent}
+                    <span className="num ml-2 text-[13px]">
+                      {overview.most_aces_in_a_match.date}
+                    </span>
+                  </p>
+                </Panel>
+              </Reveal>
             )}
           </div>
-        </>
+        </section>
       ) : (
-        <GlassCard className="p-6 text-center text-[var(--color-ink-secondary)]">
-          No matches loaded yet — stage your first one below.
-        </GlassCard>
+        <Reveal>
+          <div className="border-y border-[var(--color-line)] py-14 text-center">
+            <p className="h2 mx-auto max-w-[18ch]">Nothing on record yet.</p>
+            <p className="lede mx-auto mt-4 text-center">
+              Stage your first SwingVision export below and it will appear here the moment you
+              finish confirming its flagged points.
+            </p>
+          </div>
+        </Reveal>
       )}
 
-      <GlassCard className="p-6">
-        <h2 className="font-[var(--font-display)] text-xl font-bold">Load a match</h2>
-        <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
-          Upload a SwingVision export and (optionally) footage. You'll confirm any flagged
-          points before it's added to your career stats.
-        </p>
+      <section id="load" className="scroll-mt-24">
+        <Reveal>
+          <SectionHead
+            index="Step 01"
+            title="Load a match"
+            lede="The export goes to a staging file first, never straight into your stats. Anything the reconstruction wasn't sure about comes back to you for a decision."
+          />
+        </Reveal>
 
-        {phase === 'done' && finalizedMatchId !== null ? (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-5 rounded-xl border border-[var(--color-good)]/40 bg-[color-mix(in_srgb,var(--color-good)_10%,transparent)] p-5"
-          >
-            <p className="font-[var(--font-display)] text-lg font-bold text-[var(--color-good)]">
-              Match #{finalizedMatchId} loaded!
-            </p>
-            <p className="mt-1 text-sm text-[var(--color-ink-secondary)]">
-              Please enter a journal entry for feedback.
-            </p>
-            <div className="mt-4 flex gap-3">
-              <button
-                onClick={() => onMatchFinalized(finalizedMatchId)}
-                className="rounded-lg bg-gradient-brand px-4 py-2 text-sm font-semibold text-white"
-              >
-                Go to Journal
-              </button>
-              <button
-                onClick={resetForm}
-                className="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-ink-secondary)] hover:text-[var(--color-ink-primary)]"
-              >
-                Load another match
-              </button>
-            </div>
-          </motion.div>
-        ) : (
-          <form ref={formRef} onSubmit={handleSubmit} className="mt-5 space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">
-                  SwingVision export (.xlsx)
-                </span>
-                <input
-                  type="file"
-                  name="xlsx_file"
+        <AnimatePresence mode="wait">
+          {phase === 'done' && finalizedMatchId !== null ? (
+            <motion.div
+              key="done"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+              className="mt-8"
+            >
+              <Panel className="p-8" spotlight>
+                <p className="eyebrow" style={{ color: 'var(--color-teal)' }}>
+                  On the record
+                </p>
+                <p className="h2 mt-4">
+                  Match <span className="num">#{finalizedMatchId}</span> is in your career stats.
+                </p>
+                <p className="lede mt-4 text-[15px]">
+                  Write the journal entry while it's fresh — the coach reads what you wrote, not
+                  just what the tracking saw.
+                </p>
+                <div className="mt-7 flex flex-wrap items-center gap-3">
+                  <Magnetic>
+                    <button className="btn" onClick={() => onMatchFinalized(finalizedMatchId)}>
+                      Write the entry
+                      <span aria-hidden>&#8594;</span>
+                    </button>
+                  </Magnetic>
+                  <button className="btn btn-ghost" onClick={resetForm}>
+                    Load another
+                  </button>
+                </div>
+              </Panel>
+            </motion.div>
+          ) : (
+            <motion.form
+              key={`form-${formKey}`}
+              ref={formRef}
+              onSubmit={handleSubmit}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="mt-8 space-y-9"
+            >
+              <div className="grid gap-6 sm:grid-cols-2">
+                <Dropzone
+                  name="xlsx_files"
+                  label="SwingVision exports"
                   accept=".xlsx"
-                  required
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[var(--color-brand-blue)] file:px-2 file:py-1 file:text-white"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">
-                  Match video (optional, multiple for a split recording)
-                </span>
-                <input
-                  type="file"
-                  name="video_files"
                   multiple
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[var(--color-surface-raised)] file:px-2 file:py-1 file:text-[var(--color-ink-secondary)]"
+                  onNamesChange={setExportNames}
+                  hint="Required &middot; one, or several for a split recording"
                 />
-              </label>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-3">
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Date</span>
-                <input
-                  type="date"
-                  name="date"
-                  required
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+                <Dropzone
+                  name="video_files"
+                  label="Match footage"
+                  multiple
+                  onNamesChange={setVideoNames}
+                  hint="Optional &middot; name each clip after its export"
                 />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Opponent</span>
-                <input
-                  type="text"
-                  name="opponent"
-                  required
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Result</span>
-                <select
-                  name="result"
-                  required
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                >
-                  <option value="W">Win</option>
-                  <option value="L">Loss</option>
-                </select>
-              </label>
-            </div>
+              </div>
 
-            <label className="block text-sm">
-              <span className="text-[var(--color-ink-secondary)]">
-                Confirm your name as tracked by SwingVision (optional)
-              </span>
-              <input
-                type="text"
-                name="tracked_identity"
-                placeholder="e.g. Rishi Gupta"
-                className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-              />
-            </label>
+              {exportNames.length > 0 && (
+                <PartPairing exports={exportNames} videos={videoNames} />
+              )}
 
-            <div className="grid gap-4 sm:grid-cols-3">
-              {[1, 2, 3].map((n) => (
-                <label key={n} className="block text-sm">
-                  <span className="text-[var(--color-ink-secondary)]">
-                    Who served first in Set {n}?
-                  </span>
-                  <select
-                    name={`first_server_set${n}`}
-                    defaultValue=""
-                    className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                  >
-                    <option value="">Not sure / N/A</option>
-                    <option value="me">Me</option>
-                    <option value="opponent">Opponent</option>
+              <div className="grid gap-6 sm:grid-cols-3">
+                <label>
+                  <span className="field-label">Date</span>
+                  <input type="date" name="date" required className="field num" />
+                </label>
+                <label>
+                  <span className="field-label">Opponent</span>
+                  <input type="text" name="opponent" required className="field" />
+                </label>
+                <label>
+                  <span className="field-label">Result</span>
+                  <select name="result" required className="field" defaultValue="W">
+                    <option value="W">Win</option>
+                    <option value="L">Loss</option>
                   </select>
                 </label>
-              ))}
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-3">
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Energy rating (1-5)</span>
-                <input
-                  type="number"
-                  name="energy_rating"
-                  min={1}
-                  max={5}
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Mental rating (1-5)</span>
-                <input
-                  type="number"
-                  name="mental_rating"
-                  min={1}
-                  max={5}
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="text-[var(--color-ink-secondary)]">Location</span>
-                <input
-                  type="text"
-                  name="location"
-                  className="mt-1 block w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
-                />
-              </label>
-            </div>
-
-            {formError && <p className="text-sm text-[var(--color-critical)]">{formError}</p>}
-
-            {phase === 'ready' && importResult && (
-              <div className="rounded-xl border border-[var(--color-brand-blue)]/40 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,transparent)] p-4 text-sm">
-                Staged as import #{importResult.staged_label} — every flagged point is
-                confirmed. Ready to load.
               </div>
-            )}
 
-            {(phase === 'finalizing' || phase === 'done') && (
-              <TennisBallProgress
-                status={phase === 'finalizing' ? 'running' : 'done'}
-                label="Loading match into your career stats…"
-              />
-            )}
+              <div className="grid gap-6 sm:grid-cols-3">
+                <label className="sm:col-span-2">
+                  <span className="field-label">Your name as SwingVision tracked it</span>
+                  <input
+                    type="text"
+                    name="tracked_identity"
+                    placeholder="e.g. Rishi Gupta"
+                    className="field"
+                  />
+                </label>
+                <label>
+                  <span className="field-label">Location</span>
+                  <input type="text" name="location" className="field" />
+                </label>
+              </div>
 
-            <div className="flex items-center gap-3">
-              {phase === 'ready' ? (
-                <button
-                  type="button"
-                  onClick={handleFinalize}
-                  className="rounded-lg bg-gradient-brand px-5 py-2.5 text-sm font-semibold text-white"
+              <div className="grid gap-6 sm:grid-cols-3">
+                {[1, 2, 3].map((n) => (
+                  <label key={n}>
+                    <span className="field-label">Served first, set {n}</span>
+                    <select name={`first_server_set${n}`} defaultValue="" className="field">
+                      <option value="">Not sure / N/A</option>
+                      <option value="me">Me</option>
+                      <option value="opponent">Opponent</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
+
+              <div className="grid gap-6 sm:grid-cols-2">
+                <label>
+                  <span className="field-label">Energy rating (1&ndash;5)</span>
+                  <input type="number" name="energy_rating" min={1} max={5} className="field num" />
+                </label>
+                <label>
+                  <span className="field-label">Mental rating (1&ndash;5)</span>
+                  <input type="number" name="mental_rating" min={1} max={5} className="field num" />
+                </label>
+              </div>
+
+              <AnimatePresence>
+                {formError && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="text-[14px]"
+                    style={{ color: 'var(--color-clay)' }}
+                  >
+                    {formError}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+
+              {phase === 'ready' && importResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="panel-sunk p-5 text-[14px]"
                 >
-                  Finalize &amp; Load
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={phase === 'uploading'}
-                  className="rounded-lg bg-gradient-brand px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
-                >
-                  {phase === 'uploading' ? 'Staging…' : 'Load Data'}
-                </button>
+                  <p>
+                    Staged as <span className="num">{importResult.staged_label}</span> — every
+                    flagged point is confirmed. Ready to load.
+                  </p>
+                  {importResult.parts.length > 1 && (
+                    <p className="mt-2 text-[13px] text-[var(--color-dim)]">
+                      Merged{' '}
+                      <span className="num">{importResult.parts.length}</span> exports into one
+                      continuous match.
+                    </p>
+                  )}
+                  {/* What the server actually did with the filenames, and
+                      anything the reconstruction wants the reader to know -
+                      both informational, neither blocks finalizing. */}
+                  {[...importResult.upload_notes, ...importResult.import_notes].map((note) => (
+                    <p
+                      key={note}
+                      className="mt-2 border-t border-[var(--color-line)] pt-2 text-[12px] leading-relaxed text-[var(--color-dim)]"
+                    >
+                      {note}
+                    </p>
+                  ))}
+                </motion.div>
               )}
-            </div>
-          </form>
-        )}
-      </GlassCard>
+
+              {(phase === 'finalizing' || phase === 'done') && (
+                <TennisBallProgress
+                  status={phase === 'finalizing' ? 'running' : 'done'}
+                  label="Writing the match into your career stats…"
+                />
+              )}
+
+              <div className="flex items-center gap-3 border-t border-[var(--color-line)] pt-8">
+                {phase === 'ready' ? (
+                  <Magnetic>
+                    <button type="button" className="btn" onClick={handleFinalize}>
+                      Finalize &amp; load
+                      <span aria-hidden>&#8594;</span>
+                    </button>
+                  </Magnetic>
+                ) : (
+                  <Magnetic>
+                    <button type="submit" className="btn" disabled={phase === 'uploading'}>
+                      {phase === 'uploading' ? 'Staging…' : 'Stage this match'}
+                      <span aria-hidden>&#8594;</span>
+                    </button>
+                  </Magnetic>
+                )}
+              </div>
+            </motion.form>
+          )}
+        </AnimatePresence>
+      </section>
 
       {phase === 'reviewing' && pendingDetail && (
         <ReviewModal

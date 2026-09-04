@@ -1,12 +1,83 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import { api } from '../api'
 import type { MatchStats } from '../types'
-import GlassCard from '../components/GlassCard'
 import Skeleton from '../components/Skeleton'
+import Reveal from '../components/Reveal'
 
 interface MatchWithVideos {
   match: MatchStats
   videos: string[]
+}
+
+/**
+ * One clip. Plays a silent preview on hover and stops (rewinding to the
+ * poster frame) on leave, so a wall of stills becomes scannable without
+ * anyone having to click into four matches to find the right one. Clicking
+ * hands control back to the native player.
+ */
+function ClipCard({ match, videos, index }: MatchWithVideos & { index: number }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [controls, setControls] = useState(false)
+  const won = match.result === 'W'
+
+  function preview() {
+    const el = videoRef.current
+    if (!el || controls) return
+    el.muted = true
+    void el.play().catch(() => {})
+  }
+
+  function stop() {
+    const el = videoRef.current
+    if (!el || controls) return
+    el.pause()
+    el.currentTime = 0
+  }
+
+  return (
+    <Reveal delay={index * 0.05}>
+      <motion.div
+        className="group overflow-hidden rounded-[14px] border border-[var(--color-line)] bg-[var(--color-paper-3)]"
+        whileHover={{ y: -4 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 26 }}
+        onMouseEnter={preview}
+        onMouseLeave={stop}
+      >
+        <div className="relative aspect-video bg-[var(--color-ink)]">
+          <video
+            ref={videoRef}
+            src={videos[0]}
+            preload="metadata"
+            playsInline
+            controls={controls}
+            onClick={() => setControls(true)}
+            className="h-full w-full object-cover"
+          />
+          {!controls && (
+            <span className="eyebrow pointer-events-none absolute bottom-3 left-3 rounded-full bg-[var(--color-paper)] px-3 py-1 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+              Click for controls
+            </span>
+          )}
+        </div>
+        <div className="flex items-baseline justify-between gap-3 p-5">
+          <div>
+            <p className="h3">{match.opponent}</p>
+            <p className="num mt-1 text-[12px] text-[var(--color-dim)]">
+              {match.date}
+              {videos.length > 1 && ` · ${videos.length} clips`}
+            </p>
+          </div>
+          <span
+            className="eyebrow shrink-0"
+            style={{ color: won ? 'var(--color-teal)' : 'var(--color-clay)' }}
+          >
+            {won ? 'Won' : 'Lost'}
+          </span>
+        </div>
+      </motion.div>
+    </Reveal>
+  )
 }
 
 export default function FilmReview() {
@@ -37,9 +108,9 @@ export default function FilmReview() {
 
   if (entries === null) {
     return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <Skeleton key={i} className="h-56" />
+          <Skeleton key={i} className="h-64" />
         ))}
       </div>
     )
@@ -47,42 +118,25 @@ export default function FilmReview() {
 
   if (entries.length === 0) {
     return (
-      <GlassCard className="p-6 text-center text-[var(--color-ink-secondary)]">
-        No match footage uploaded yet — add video next time you load a match on Overview.
-      </GlassCard>
+      <div className="border-y border-[var(--color-line)] py-14 text-center">
+        <p className="h2">No footage yet.</p>
+        <p className="lede mx-auto mt-4 text-center">
+          Add video alongside the export next time you stage a match, and the clips will collect
+          here.
+        </p>
+      </div>
     )
   }
 
   return (
     <div>
-      <h1 className="font-[var(--font-display)] text-2xl font-bold">Film Review</h1>
-      <p className="mt-1 text-[var(--color-ink-secondary)]">
-        Footage from every match you've uploaded, newest first.
-      </p>
-
-      <div className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {entries.map(({ match, videos }) => (
-          <GlassCard key={match.match_id} className="overflow-hidden">
-            <video src={videos[0]} controls preload="metadata" className="w-full bg-black" />
-            <div className="p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold">{match.opponent}</span>
-                <span
-                  className={`text-xs font-bold ${
-                    match.result === 'W' ? 'text-[var(--color-good)]' : 'text-[var(--color-critical)]'
-                  }`}
-                >
-                  {match.result}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-[var(--color-ink-muted)]">{match.date}</p>
-              {videos.length > 1 && (
-                <p className="mt-1 text-xs text-[var(--color-ink-secondary)]">
-                  +{videos.length - 1} more clip{videos.length - 1 === 1 ? '' : 's'}
-                </p>
-              )}
-            </div>
-          </GlassCard>
+      <div className="flex items-baseline justify-between border-t border-[var(--color-line)] pt-6">
+        <span className="eyebrow">The tape</span>
+        <span className="eyebrow num">{entries.length} matches</span>
+      </div>
+      <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {entries.map((entry, i) => (
+          <ClipCard key={entry.match.match_id} {...entry} index={i} />
         ))}
       </div>
     </div>

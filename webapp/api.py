@@ -35,7 +35,7 @@ from swingvision_import.pipeline import SwingVisionImportPipeline
 from swingvision_import.review import ConfirmationError, load_pending, unresolved_flags
 
 from .config import WebAppConfig
-from .uploads import match_slug, save_uploaded_videos, save_uploaded_xlsx
+from .uploads import match_slug, pair_uploads, save_paired_videos, save_uploaded_xlsx
 
 _SET_NUMBERS = (1, 2, 3)
 _OVERRIDE_TEXT_FIELDS = ("pros", "cons", "notes", "location")
@@ -232,31 +232,50 @@ def create_api_blueprint(
 
     @api.post("/import")
     def do_import():
-        xlsx_file = request.files.get("xlsx_file")
-        if xlsx_file is None or not xlsx_file.filename:
-            return jsonify({"error": "Please choose a SwingVision .xlsx export."}), 400
+        # "xlsx_files" is the current field (one or many, a multi-part
+        # recording's exports); "xlsx_file" stays accepted so anything
+        # posting the older single-file field keeps working.
+        xlsx_files = [
+            f
+            for f in (*request.files.getlist("xlsx_files"), *request.files.getlist("xlsx_file"))
+            if f and f.filename
+        ]
+        if not xlsx_files:
+            return jsonify({"error": "Please choose at least one SwingVision .xlsx export."}), 400
 
         date = request.form["date"]
         opponent = request.form["opponent"]
         result = request.form["result"]
 
-        xlsx_path = save_uploaded_xlsx(
-            xlsx_file, date=date, opponent=opponent, uploads_dir=webapp_config.uploads_dir
-        )
         video_files = [f for f in request.files.getlist("video_files") if f and f.filename]
-        save_uploaded_videos(
-            video_files, date=date, opponent=opponent, media_dir=webapp_config.media_dir
+        pairing = pair_uploads(xlsx_files, video_files)
+
+        xlsx_paths = [
+            save_uploaded_xlsx(
+                part.xlsx, date=date, opponent=opponent, uploads_dir=webapp_config.uploads_dir
+            )
+            for part in pairing.parts
+        ]
+        save_paired_videos(
+            pairing, date=date, opponent=opponent, media_dir=webapp_config.media_dir
         )
 
+        ingest_kwargs = dict(
+            date=date,
+            opponent=opponent,
+            result=result,
+            first_server_by_set=_parse_first_server_by_set(request.form),
+            tracked_identity=request.form.get("tracked_identity") or None,
+            **_parse_match_overrides(request.form),
+        )
         try:
-            json_path = pipeline.ingest(
-                xlsx_path,
-                date=date,
-                opponent=opponent,
-                result=result,
-                first_server_by_set=_parse_first_server_by_set(request.form),
-                tracked_identity=request.form.get("tracked_identity") or None,
-                **_parse_match_overrides(request.form),
+            # Two or more exports are one interrupted recording, not two
+            # matches: merged into a single continuous reconstruction so a
+            # set spanning the file boundary gets one correct score.
+            json_path = (
+                pipeline.ingest_multi_part(xlsx_paths, **ingest_kwargs)
+                if pairing.is_multi_part
+                else pipeline.ingest(xlsx_paths[0], **ingest_kwargs)
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -276,6 +295,15 @@ def create_api_blueprint(
                 "opponent": record.opponent,
                 "flags": unresolved_flags(record),
                 "import_notes": record.import_notes,
+                "parts": [
+                    {
+                        "index": part.index,
+                        "export": part.xlsx.filename,
+                        "videos": [video.filename for video in part.videos],
+                    }
+                    for part in pairing.parts
+                ],
+                "upload_notes": pairing.notes,
             }
         )
 

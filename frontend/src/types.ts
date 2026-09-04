@@ -87,6 +87,14 @@ export interface CareerStats {
   most_aces_in_a_match: CareerHighlight | null
 }
 
+/** One export and the footage paired with it by filename, as the server
+ *  actually resolved it (the client-side preview is only a preview). */
+export interface MatchPart {
+  index: number
+  export: string
+  videos: string[]
+}
+
 export interface ImportResult {
   json_filename: string
   staged_label: number
@@ -94,6 +102,8 @@ export interface ImportResult {
   opponent: string
   flags: string[]
   import_notes: string[]
+  parts: MatchPart[]
+  upload_notes: string[]
 }
 
 export interface FlaggedPointShot {
