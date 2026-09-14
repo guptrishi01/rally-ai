@@ -162,9 +162,25 @@ class MatchRecord:
         pros: Self-reported "what went well" notes.
         cons: Self-reported "what needs work" notes.
         notes: Free-text notes for the match.
+        reviewer_note: The reviewer's own account, written at upload time,
+            of anything the reconstruction can't see for itself - most
+            often why there is more than one export ("part 2 restarts
+            mid-game", "I switched ends between files", "the second file
+            double-counts the first game"). Staged-JSON only, never a
+            database column: it's context for the review of *this* import,
+            not a property of the finished match (that's `notes`). Fed to
+            review_assist.py's per-point prompt so Claude judges each
+            flagged point knowing what the human already knows.
         source_file: Path to the SwingVision export this record was built
             from, for traceability during review. None for a match merged
             from multiple exports — see source_files instead.
+        source_archive: Path to the zip the exports were packed into once
+            staging succeeded, if pipeline.archive_sources() has run. When
+            set, source_file/source_files hold member *names* inside that
+            archive rather than paths on disk, and shots_by_point() reads
+            them straight out of it - nothing re-extracts to a temp file.
+            None while the exports are still loose on disk (the CLI's
+            default, since those are the user's own files).
         source_files: Paths to the SwingVision exports this record was
             merged from (in play order), for a match whose recording was
             interrupted and split into multiple files — see
@@ -196,8 +212,10 @@ class MatchRecord:
     pros: str | None = None
     cons: str | None = None
     notes: str | None = None
+    reviewer_note: str | None = None
     source_file: str | None = None
     source_files: list[str] | None = None
+    source_archive: str | None = None
     sets: list[SetRecord] = field(default_factory=list)
     import_notes: list[str] = field(default_factory=list)
     shot_pattern_summary: dict[str, float] | None = None

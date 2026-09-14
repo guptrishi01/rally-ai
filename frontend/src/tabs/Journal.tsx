@@ -197,7 +197,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
                 />
 
                 {saveError && (
-                  <p className="text-[14px]" style={{ color: 'var(--color-clay)' }}>
+                  <p className="text-[14px]" style={{ color: 'var(--color-loss)' }}>
                     {saveError}
                   </p>
                 )}
@@ -215,7 +215,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0 }}
                         className="eyebrow"
-                        style={{ color: 'var(--color-teal)' }}
+                        style={{ color: 'var(--color-win)' }}
                       >
                         Saved
                       </motion.span>
@@ -236,7 +236,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
                   </p>
 
                   {coachError && (
-                    <p className="mt-4 text-[14px]" style={{ color: 'var(--color-clay)' }}>
+                    <p className="mt-4 text-[14px]" style={{ color: 'var(--color-loss)' }}>
                       {coachError}
                     </p>
                   )}

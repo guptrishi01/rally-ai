@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+import time
+import zipfile
 
 import pytest
 from openpyxl import Workbook
@@ -706,3 +709,196 @@ def test_apply_resolutions_leaves_unresolved_points_untouched(
 
     with pytest.raises(UnresolvedReviewError):
         pipeline.finalize(json_path)
+
+
+class _PerPointMessages:
+    """Answers with a classification derived from the prompt itself, so a
+    result landing on the wrong point is detectable rather than invisible.
+
+    Records calls under a lock: the point of these tests is that suggest()
+    now runs concurrently, so the fake has to be safe to call that way."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.calls: list[dict] = []
+        self.max_concurrent = 0
+        self._active = 0
+
+    def create(self, **kwargs):
+        with self._lock:
+            self.calls.append(kwargs)
+            self._active += 1
+            self.max_concurrent = max(self.max_concurrent, self._active)
+        # Long enough that a sequential implementation could not reach the
+        # concurrency this asserts, short enough not to slow the suite.
+        time.sleep(0.02)
+        # Echo the shot count back, so each answer is tied to its own point.
+        shot_count = kwargs["system"].count('"shot_number"')
+        end_type = "winner" if shot_count % 2 else "unforced_error"
+        with self._lock:
+            self._active -= 1
+        payload = json.dumps(
+            {
+                "point_end_type": end_type,
+                "reasoning": f"{shot_count} shots",
+                "confidence": "medium",
+            }
+        )
+        return FakeMessage(content=[FakeTextBlock(text=payload)])
+
+
+class _PerPointClient:
+    def __init__(self):
+        self.messages = _PerPointMessages()
+
+
+def test_suggestions_run_concurrently(synthetic_non_pro_xlsx, import_config):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    client = _PerPointClient()
+
+    pipeline.suggest(client, json_path)
+
+    assert client.messages.max_concurrent > 1
+
+
+def test_each_suggestion_lands_on_the_point_it_was_asked_about(
+    synthetic_non_pro_xlsx, import_config
+):
+    """Concurrency must not shuffle answers between points - results are
+    attached through an explicit future -> point map, not completion order."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    shots_by_point = pipeline.shots_by_point(load_pending(json_path))
+    client = _PerPointClient()
+
+    record = pipeline.suggest(client, json_path)
+
+    annotated = 0
+    for set_record in record.sets:
+        for point in set_record.points:
+            if point.ai_suggestion_reasoning is None:
+                continue
+            annotated += 1
+            expected_shots = len(shots_by_point[point.source_point_number])
+            # The fake encoded this point's own shot count in its answer.
+            assert point.ai_suggestion_reasoning == f"{expected_shots} shots"
+            expected_type = "winner" if expected_shots % 2 else "unforced_error"
+            assert point.ai_suggested_point_end_type == expected_type
+    assert annotated > 0
+
+
+def test_suggest_skips_points_the_reviewer_has_already_confirmed(
+    synthetic_non_pro_xlsx, import_config
+):
+    """A settled point is not worth paying to re-ask about."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        synthetic_non_pro_xlsx, date="2026-08-06", opponent="Alex", result="W"
+    )
+    record = load_pending(json_path)
+    flagged = [p for s in record.sets for p in s.points if p.needs_review]
+    assert len(flagged) > 1
+    flagged[0].needs_review = False
+    save_pending(record, import_config.pending_dir)
+
+    client = _FakeSuggestionClient()
+    pipeline.suggest(client, json_path)
+
+    assert len(client.messages.calls) == len(flagged) - 1
+
+
+def test_archive_sources_packs_the_export_and_removes_the_loose_file(
+    synthetic_non_pro_xlsx, import_config, tmp_path
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    # Copy first: archive_sources deletes what it packs, and a caller must
+    # only ever point it at files it owns.
+    owned = tmp_path / "owned.xlsx"
+    owned.write_bytes(synthetic_non_pro_xlsx.read_bytes())
+    json_path = pipeline.ingest(owned, date="2026-08-06", opponent="Alex", result="W")
+
+    archive_path = pipeline.archive_sources(json_path)
+
+    assert archive_path is not None and archive_path.exists()
+    assert not owned.exists()
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["owned.xlsx"]
+    record = load_pending(json_path)
+    assert record.source_archive == str(archive_path)
+    assert record.source_files == ["owned.xlsx"]
+    assert record.source_file is None
+
+
+def test_an_archived_export_is_smaller_than_the_original(
+    synthetic_non_pro_xlsx, import_config, tmp_path
+):
+    """The whole point of the step - a .xlsx is an OOXML zip whose parts are
+    barely compressed, so deflating it again is a real saving."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    owned = tmp_path / "owned.xlsx"
+    owned.write_bytes(synthetic_non_pro_xlsx.read_bytes())
+    original_size = owned.stat().st_size
+    json_path = pipeline.ingest(owned, date="2026-08-06", opponent="Alex", result="W")
+
+    archive_path = pipeline.archive_sources(json_path)
+
+    assert archive_path.stat().st_size < original_size
+
+
+def test_suggestions_still_work_once_the_export_is_archived(
+    synthetic_non_pro_xlsx, import_config, tmp_path
+):
+    """The regression that matters: suggest() re-parses the original export,
+    so archiving must not strand it."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    owned = tmp_path / "owned.xlsx"
+    owned.write_bytes(synthetic_non_pro_xlsx.read_bytes())
+    json_path = pipeline.ingest(owned, date="2026-08-06", opponent="Alex", result="W")
+    pipeline.archive_sources(json_path)
+
+    record = pipeline.suggest(_FakeSuggestionClient(), json_path)
+
+    annotated = [
+        p for s in record.sets for p in s.points if p.ai_suggested_point_end_type
+    ]
+    assert annotated, "no suggestions came back after archiving"
+
+
+def test_archive_sources_is_idempotent(synthetic_non_pro_xlsx, import_config, tmp_path):
+    pipeline = SwingVisionImportPipeline(import_config)
+    owned = tmp_path / "owned.xlsx"
+    owned.write_bytes(synthetic_non_pro_xlsx.read_bytes())
+    json_path = pipeline.ingest(owned, date="2026-08-06", opponent="Alex", result="W")
+
+    first = pipeline.archive_sources(json_path)
+    second = pipeline.archive_sources(json_path)
+
+    assert first == second
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["owned.xlsx"]  # not packed into itself
+
+
+def test_archiving_a_multi_part_match_keeps_play_order(
+    synthetic_non_pro_xlsx, import_config, tmp_path
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    parts = []
+    for name in ("set1.xlsx", "set2.xlsx"):
+        part = tmp_path / name
+        part.write_bytes(synthetic_non_pro_xlsx.read_bytes())
+        parts.append(part)
+    json_path = pipeline.ingest_multi_part(
+        parts, date="2026-08-06", opponent="Alex", result="W"
+    )
+
+    pipeline.archive_sources(json_path)
+
+    record = load_pending(json_path)
+    assert record.source_files == ["set1.xlsx", "set2.xlsx"]
+    # And the merged re-parse still resolves every point's provenance.
+    assert pipeline.shots_by_point(record)

@@ -91,12 +91,16 @@ export default function App() {
       <Cursor />
       <ScrollProgress />
 
+      {/* At rest the header is part of the paper, so the masthead below it
+          keeps its air. Once the page moves it becomes the ATP navy bar -
+          and that dark ground is what finally makes the Aero lime legible,
+          so the active-tab marker lights up in it. */}
       <header
         className="sticky top-0 z-40 transition-colors duration-300"
         style={{
-          background: scrolled ? 'color-mix(in srgb, var(--color-paper) 88%, transparent)' : 'transparent',
+          background: scrolled ? 'color-mix(in srgb, var(--color-navy) 94%, transparent)' : 'transparent',
           backdropFilter: scrolled ? 'blur(10px)' : 'none',
-          borderBottom: `1px solid ${scrolled ? 'var(--color-line)' : 'transparent'}`,
+          borderBottom: `1px solid ${scrolled ? 'var(--color-navy-deep)' : 'transparent'}`,
         }}
       >
         <div className="wrap flex items-center justify-between gap-6 py-4">
@@ -106,16 +110,24 @@ export default function App() {
             aria-label="Rally AI home"
           >
             <span aria-hidden className="relative block h-2.5 w-2.5 self-center">
-              <span className="absolute inset-0 rounded-full bg-[var(--color-accent)]" />
+              <span
+                className="absolute inset-0 rounded-full transition-colors duration-300"
+                style={{ background: scrolled ? 'var(--color-spark)' : 'var(--color-accent)' }}
+              />
               <motion.span
-                className="absolute inset-0 rounded-full bg-[var(--color-accent)]"
+                className="absolute inset-0 rounded-full"
+                style={{ background: scrolled ? 'var(--color-spark)' : 'var(--color-accent)' }}
                 animate={{ scale: [1, 2.1, 1], opacity: [0.5, 0, 0.5] }}
                 transition={{ duration: 2.6, repeat: Infinity, ease: 'easeOut' }}
               />
             </span>
             <span
-              className="text-[19px] tracking-[-0.02em]"
-              style={{ fontFamily: 'var(--font-serif)', fontWeight: 500 }}
+              className="text-[19px] tracking-[-0.02em] transition-colors duration-300"
+              style={{
+                fontFamily: 'var(--font-serif)',
+                fontWeight: 500,
+                color: scrolled ? 'var(--color-paper)' : 'var(--color-ink)',
+              }}
             >
               Rally AI
             </span>
@@ -127,14 +139,23 @@ export default function App() {
                 key={t.id}
                 onClick={() => selectTab(t.id)}
                 className="relative px-3 py-2 text-[13px] transition-colors"
-                style={{ color: tab === t.id ? 'var(--color-ink)' : 'var(--color-dim)' }}
+                style={{
+                  color: scrolled
+                    ? tab === t.id
+                      ? 'var(--color-paper)'
+                      : '#a9b0cc'
+                    : tab === t.id
+                      ? 'var(--color-ink)'
+                      : 'var(--color-dim)',
+                }}
               >
                 <span className="hidden sm:inline">{t.label}</span>
                 <span className="num sm:hidden">{t.index}</span>
                 {tab === t.id && (
                   <motion.span
                     layoutId="nav-underline"
-                    className="absolute inset-x-2 -bottom-px h-px bg-[var(--color-accent)]"
+                    className="absolute inset-x-2 -bottom-px h-px"
+                    style={{ background: scrolled ? 'var(--color-spark)' : 'var(--color-accent)' }}
                     transition={{ type: 'spring', stiffness: 400, damping: 34 }}
                   />
                 )}
@@ -211,7 +232,7 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      <footer className="above-grain border-t border-[var(--color-line)] bg-[var(--color-paper-2)]">
+      <footer className="on-navy above-grain">
         <div className="wrap grid gap-10 py-14 sm:grid-cols-[1.4fr_1fr_1fr]">
           <div>
             <p
@@ -237,14 +258,14 @@ export default function App() {
           </div>
           <div>
             <p className="eyebrow">Pipeline</p>
-            <div className="mt-4 flex flex-col gap-2.5 text-[14px] text-[var(--color-dim)]">
+            <div className="mt-4 flex flex-col gap-2.5 text-[14px] text-[#a9b0cc]">
               <span>Ingest &rarr; Review</span>
               <span>Resolve &rarr; Finalize</span>
               <span>Stats &rarr; Coach</span>
             </div>
           </div>
         </div>
-        <div className="wrap flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-line)] py-5">
+        <div className="wrap flex flex-wrap items-center justify-between gap-3 border-t border-white/12 py-5">
           <span className="eyebrow">Local-only &middot; 127.0.0.1</span>
           <span className="eyebrow">Nothing final until you confirm it</span>
         </div>

@@ -84,7 +84,7 @@ export default function PartPairing({ exports, videos }: PartPairingProps) {
           </span>
           <span
             className="eyebrow"
-            style={{ color: trouble ? 'var(--color-clay)' : 'var(--color-teal)' }}
+            style={{ color: trouble ? 'var(--color-loss)' : 'var(--color-win)' }}
           >
             {trouble ? 'Filenames disagree' : 'Paired by filename'}
           </span>
@@ -109,7 +109,7 @@ export default function PartPairing({ exports, videos }: PartPairingProps) {
               ) : (
                 <span
                   className="num"
-                  style={{ color: videos.length > 0 ? 'var(--color-clay)' : 'var(--color-faint)' }}
+                  style={{ color: videos.length > 0 ? 'var(--color-loss)' : 'var(--color-faint)' }}
                 >
                   {videos.length > 0 ? 'no matching footage' : 'no footage'}
                 </span>
@@ -120,7 +120,7 @@ export default function PartPairing({ exports, videos }: PartPairingProps) {
           {unpaired.length > 0 && (
             <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-[var(--color-line)] pt-2.5 text-[13px]">
               <span className="eyebrow w-14 shrink-0">Loose</span>
-              <span className="num" style={{ color: 'var(--color-clay)' }}>
+              <span className="num" style={{ color: 'var(--color-loss)' }}>
                 {unpaired.join(', ')}
               </span>
             </div>

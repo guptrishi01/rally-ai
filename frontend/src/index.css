@@ -1,12 +1,17 @@
 @import 'tailwindcss';
 
 /* ---------------------------------------------------------------------------
-   RallyAI design system - warm paper, editorial serif, hairline rules.
+   Rally AI design system - warm paper, editorial serif, hairline rules,
+   ATP colour.
 
    Light-first on purpose: this is a reading surface (stats, journal entries,
-   coaching prose), not a control room. The whole palette is a warm neutral
-   stack plus exactly three chromatic accents, so color always means something
-   (terracotta = action, teal = good, blue = data) instead of decorating.
+   coaching prose), not a control room. Type and layout are unchanged; what
+   the palette borrows from atptour.com is its *structure* - navy chrome,
+   bold blue for anything you act on, green for a result that went your way -
+   plus the Babolat Aero lime as a single electric highlight. Colour always
+   means something here, and never means it alone: every win/loss state is
+   spelled out in words as well, so nothing depends on telling red from
+   green.
 --------------------------------------------------------------------------- */
 
 @theme {
@@ -14,28 +19,44 @@
   --font-serif: 'Fraunces', ui-serif, Georgia, 'Times New Roman', serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* Paper stack - the four surfaces, warmest at the back. */
+  /* Paper stack - unchanged. The cream ground is what lets Fraunces read
+     the way it does, so the ATP palette below is layered onto it rather
+     than replacing it. */
   --color-paper: #f4f1ea;
   --color-paper-2: #efeadd;
   --color-paper-3: #fbf8f0;
   --color-paper-sink: #e7decb;
 
-  /* Ink stack. */
-  --color-ink: #0b1515;
-  --color-ink-2: #23201b;
-  --color-dim: #7d756a;
-  --color-faint: #b3aa99;
+  /* Chrome. The navy the ATP site runs its nav and footer in - the only
+     dark ground in the app, and the only place --color-spark is legible. */
+  --color-navy: #0a1240;
+  --color-navy-deep: #050530;
+
+  /* Ink stack, pulled toward that navy so type and chrome are one family
+     rather than warm-brown text sitting on cool-blue furniture.
+     Contrast on paper: ink 15.9:1, dim 5.6:1, faint 3.3:1. */
+  --color-ink: #0b1533;
+  --color-ink-2: #1b2447;
+  --color-dim: #5a5f72;
+  --color-faint: #7e8496;
 
   /* Hairlines - this design leans on rules, not boxes and shadows. */
-  --color-line: #e7decb;
-  --color-line-strong: #dad3c4;
+  --color-line: #e2ded2;
+  --color-line-strong: #cfcbbd;
 
-  /* Accents. Exactly three, each with one job. */
-  --color-accent: #bc5b45; /* terracotta - actions, the live/primary state */
-  --color-accent-deep: #b65440;
-  --color-blue: #2e5fa8; /* data series, links */
-  --color-teal: #1e9e8a; /* good / won / confirmed */
-  --color-clay: #b65440; /* critical / lost - the accent's deeper twin */
+  /* Accents, read off atptour.com's own tokens. Each still has exactly
+     one job, and none of them is ever the only thing carrying meaning -
+     won/lost is always spelled out in words too. */
+  --color-accent: #1d66bf; /* ATP hard-court blue - actions, active state */
+  --color-accent-deep: #154e96; /* hover, and blue *text* on paper (7.3:1) */
+  --color-blue: #1d66bf; /* first data series */
+  --color-win: #2b752f; /* ATP grass green - won / confirmed (5.1:1) */
+  --color-loss: #b00512; /* ATP red - lost / critical (6.5:1) */
+
+  /* Babolat Aero lime. Deliberately has no legible pairing on paper
+     (1.01:1) - it is only ever used ON navy, or as a highlighter block
+     UNDER ink. Never a text colour on cream, never a hairline. */
+  --color-spark: #eaff22;
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -68,12 +89,15 @@ body::before {
   z-index: 0;
   pointer-events: none;
   opacity: 0.5;
-  background-image: radial-gradient(circle at 1px 1px, #0b151508 1px, transparent 0);
+  background-image: radial-gradient(circle at 1px 1px, #0b153308 1px, transparent 0);
   background-size: 4px 4px;
 }
 
+/* The one place the Aero lime touches the cream page: as a highlighter
+   *behind* ink, which is the only pairing it has real contrast in. */
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--color-spark) 62%, transparent);
+  color: var(--color-ink);
 }
 
 :focus-visible {
@@ -211,8 +235,8 @@ body::before {
     margin-bottom: 7px;
   }
 
-  /* The primary action: a filled terracotta pill, straight from the
-     reference site's CTA treatment. */
+  /* The primary action: a filled ATP-blue pill. White label on
+     --color-accent is 5.7:1, and 8.2:1 once hover deepens it. */
   .btn {
     display: inline-flex;
     align-items: center;
@@ -221,7 +245,7 @@ body::before {
     padding: 12px 24px;
     border-radius: 999px;
     background: var(--color-accent);
-    color: #f7f3ea;
+    color: #ffffff;
     font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 500;
@@ -261,7 +285,7 @@ body::before {
   .link {
     color: var(--color-ink);
     text-decoration: none;
-    background-image: linear-gradient(var(--color-accent), var(--color-accent));
+    background-image: linear-gradient(var(--color-accent-deep), var(--color-accent-deep));
     background-size: 0% 1px;
     background-position: 0 100%;
     background-repeat: no-repeat;
@@ -285,12 +309,39 @@ body::before {
     transition: opacity 0.3s ease;
     background: radial-gradient(
       340px circle at var(--mx, 50%) var(--my, 50%),
-      color-mix(in srgb, var(--color-accent) 9%, transparent),
+      color-mix(in srgb, var(--color-accent) 11%, transparent),
       transparent 68%
     );
   }
   .spotlight:hover::after {
     opacity: 1;
+  }
+
+  /* Navy chrome. The one dark ground in the app - header-when-scrolled
+     and the footer - and therefore the only place the Aero lime is
+     legible (16:1 on this navy, against 1.01:1 on cream). Everything
+     inside inverts to the paper tones, so contrast survives the flip. */
+  .on-navy {
+    background: var(--color-navy);
+    color: var(--color-paper);
+  }
+  .on-navy .eyebrow,
+  .on-navy .lede {
+    color: #a9b0cc; /* 8.3:1 on navy */
+  }
+  .on-navy .link {
+    color: var(--color-paper);
+    background-image: linear-gradient(var(--color-spark), var(--color-spark));
+  }
+
+  /* A lime marker behind ink, the way a highlighter works - the only
+     on-paper use of --color-spark, at 16:1. */
+  .spark-mark {
+    background-image: linear-gradient(var(--color-spark), var(--color-spark));
+    background-size: 100% 0.42em;
+    background-position: 0 88%;
+    background-repeat: no-repeat;
+    color: var(--color-ink);
   }
 
   .above-grain {

@@ -14,11 +14,22 @@ load.finalize_and_load; suggestions never bypass that gate.
 from __future__ import annotations
 
 import logging
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ai.client import AnthropicClientLike
 
-from . import db, load, quality_check, reconstruct, review, review_assist, review_resolve
+from . import (
+    db,
+    load,
+    quality_check,
+    reconstruct,
+    review,
+    review_assist,
+    review_resolve,
+    sources,
+)
 from .config import ImportConfig
 from .parse import SwingVisionParser
 from .raw import RawSetRow, RawSettings, RawShotRow
@@ -298,15 +309,72 @@ class SwingVisionImportPipeline:
             The lookup, or None if the record has no source file(s) at all
             to re-parse (distinct from a source that parses to zero shots).
         """
-        if record.source_files:
-            raw_exports = [self._parser.parse(Path(p)) for p in record.source_files]
-            return reconstruct.group_shots_by_point(
-                reconstruct.merge_shots([raw.shots for raw in raw_exports])
-            )
-        if record.source_file is not None:
-            raw = self._parser.parse(Path(record.source_file))
-            return reconstruct.group_shots_by_point(raw.shots)
-        return None
+        raw_exports = sources.parse_sources(record, self._parser)
+        if not raw_exports:
+            return None
+        shots = (
+            reconstruct.merge_shots([raw.shots for raw in raw_exports])
+            if len(raw_exports) > 1
+            else raw_exports[0].shots
+        )
+        return reconstruct.group_shots_by_point(shots)
+
+    def archive_sources(self, json_path: Path) -> Path | None:
+        """Packs a staged match's exports into one zip and re-points at it.
+
+        Called after staging succeeds, by callers that own the export files
+        outright - the web app, whose uploads are already its own copies in
+        data/uploads/. **Not** called by ingest() itself, because the CLI
+        path is handed the user's own file and must never delete it.
+
+        A SwingVision .xlsx is an OOXML zip whose parts are stored with
+        little compression, so deflating it measures at roughly 40% saved -
+        worth doing. Footage is deliberately *not* included: H.264/H.265 is
+        already entropy-coded (measured at -0.0%, i.e. very slightly
+        larger), and zipping it would also break Film Review, which streams
+        the file straight from disk through a <video> tag.
+
+        Idempotent: a record already pointing at an archive is returned
+        unchanged rather than double-packed.
+
+        Args:
+            json_path: Path to the pending JSON written by ingest().
+
+        Returns:
+            The archive's path, or None if the record had no source files
+            on disk to pack (already archived, or a record with none).
+        """
+        record = review.load_pending(json_path)
+        if record.source_archive:
+            return Path(record.source_archive)
+
+        sources = [Path(p) for p in (record.source_files or [])]
+        if not sources and record.source_file:
+            sources = [Path(record.source_file)]
+        sources = [p for p in sources if p.exists()]
+        if not sources:
+            return None
+
+        archive_path = sources[0].with_name(f"{json_path.stem}_exports.zip")
+        with zipfile.ZipFile(
+            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9
+        ) as archive:
+            for source in sources:
+                archive.write(source, arcname=source.name)
+
+        # Only unlink once the archive is closed and every member is in it,
+        # so a failure part-way through leaves the originals untouched.
+        for source in sources:
+            source.unlink()
+
+        record.source_archive = str(archive_path)
+        record.source_files = [source.name for source in sources]
+        record.source_file = None
+        review.save_pending(record, self.config.pending_dir)
+        logger.info(
+            "Archived %d export(s) into %s", len(sources), archive_path.name
+        )
+        return archive_path
 
     def suggest(
         self,
@@ -349,16 +417,41 @@ class SwingVisionImportPipeline:
 
         suggestion_config = suggestion_config or SuggestionConfig()
 
+        # Only points still awaiting a human decision are worth asking
+        # about: one the reviewer has already confirmed is settled, and a
+        # suggestion attached to it is noise the next re-run pays for.
+        targets = [
+            (set_record, point)
+            for set_record in record.sets
+            for point in set_record.points
+            if point.source_point_number is not None and point.needs_review
+        ]
+
+        # Every call is independent and stateless - one point's own shot
+        # sequence in, one classification out - so this is the same
+        # sanctioned ThreadPoolExecutor case as ai/generate.py's three
+        # specialists, just wider. Concurrency changes only how long the
+        # batch takes: results are attached through an explicit
+        # future -> point map, never by completion order, and a point that
+        # fails still fails alone.
         suggested_count = 0
-        for set_record in record.sets:
-            for point in set_record.points:
-                if point.source_point_number is None:
-                    continue
-                shot_context = shots_by_point.get(point.source_point_number, [])
+        workers = max(1, min(self.config.suggestion_workers, len(targets) or 1))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    review_assist.suggest_point_resolution,
+                    client,
+                    suggestion_config,
+                    point,
+                    shots_by_point.get(point.source_point_number, []),
+                    record.reviewer_note,
+                ): (set_record, point)
+                for set_record, point in targets
+            }
+            for future in as_completed(futures):
+                set_record, point = futures[future]
                 try:
-                    suggestion = review_assist.suggest_point_resolution(
-                        client, suggestion_config, point, shot_context
-                    )
+                    suggestion = future.result()
                 except review_assist.SuggestionError:
                     logger.exception(
                         "Suggestion failed for set %d game %d point %d",

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from swingvision_import import reconstruct
+from swingvision_import import reconstruct, sources
 from swingvision_import.config import ImportConfig
 from swingvision_import.parse import SwingVisionParser
 from swingvision_import.raw import RawShotRow
@@ -150,11 +150,10 @@ def _match_shots(
 ) -> tuple[str, dict[int, list[RawShotRow]]]:
     """Re-derives (host_name, shots grouped by point) for a staged match.
 
-    Re-parses the match's original export(s) exactly the way
-    SwingVisionImportPipeline.shots_by_point does - duplicated here
-    (rather than reusing that pipeline method) only because this also
-    needs the raw Settings host_name, which shots_by_point's return shape
-    doesn't carry.
+    Delegates the "where do this record's exports actually live" question
+    to swingvision_import.sources, which handles both loose files and an
+    archived zip - this used to carry its own copy of that logic, which
+    silently broke the first time exports started being archived.
 
     Args:
         record: The staged match record (from a still-present pending
@@ -166,16 +165,16 @@ def _match_shots(
         source file to re-parse, or no Settings sheet was found -
         callers treat that as "nothing usable here," not an error.
     """
-    if record.source_files:
-        raw_exports = [parser.parse(Path(p)) for p in record.source_files]
-        merged = reconstruct.merge_shots([raw.shots for raw in raw_exports])
-        host_name = raw_exports[0].settings.host_name if raw_exports[0].settings else ""
-        return host_name, reconstruct.group_shots_by_point(merged)
-    if record.source_file:
-        raw = parser.parse(Path(record.source_file))
-        host_name = raw.settings.host_name if raw.settings else ""
-        return host_name, reconstruct.group_shots_by_point(raw.shots)
-    return "", {}
+    raw_exports = sources.parse_sources(record, parser)
+    if not raw_exports:
+        return "", {}
+    shots = (
+        reconstruct.merge_shots([raw.shots for raw in raw_exports])
+        if len(raw_exports) > 1
+        else raw_exports[0].shots
+    )
+    host_name = raw_exports[0].settings.host_name if raw_exports[0].settings else ""
+    return host_name, reconstruct.group_shots_by_point(shots)
 
 
 def build_shot_embeddings(

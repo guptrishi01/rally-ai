@@ -141,7 +141,7 @@ export default function Statistics() {
           <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2">
             {[
               { name: 'Points won %', color: 'var(--color-blue)' },
-              { name: 'First serve %', color: 'var(--color-accent)' },
+              { name: 'First serve %', color: 'var(--color-win)' },
             ].map((s) => (
               <span key={s.name} className="eyebrow flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
@@ -171,9 +171,9 @@ export default function Statistics() {
                 <Line
                   type="monotone"
                   dataKey="First serve %"
-                  stroke="var(--color-accent)"
+                  stroke="var(--color-win)"
                   strokeWidth={1.75}
-                  dot={{ r: 2.5, strokeWidth: 0, fill: 'var(--color-accent)' }}
+                  dot={{ r: 2.5, strokeWidth: 0, fill: 'var(--color-win)' }}
                   activeDot={{ r: 5 }}
                   animationDuration={1100}
                   animationBegin={180}
@@ -298,7 +298,7 @@ export default function Statistics() {
                         <Bar
                           dataKey="value"
                           name="Points"
-                          fill="var(--color-accent)"
+                          fill="var(--color-ink-2)"
                           radius={[3, 3, 0, 0]}
                           maxBarSize={56}
                           animationDuration={900}

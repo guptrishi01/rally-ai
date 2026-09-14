@@ -23,7 +23,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 sys.path.insert(0, str(_REPO_ROOT))
 
-from flask import Flask, send_from_directory  # noqa: E402
+from flask import Flask, jsonify, send_from_directory  # noqa: E402
+from werkzeug.exceptions import RequestEntityTooLarge  # noqa: E402
 
 from ai.config import AICoachConfig  # noqa: E402
 from ai.records import CoachingReport  # noqa: E402
@@ -83,6 +84,30 @@ def create_app(
     webapp_config = webapp_config or WebAppConfig()
     app.config["MAX_CONTENT_LENGTH"] = webapp_config.max_content_length
     pipeline = SwingVisionImportPipeline(import_config)
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def upload_too_large(_error):
+        """Answers an over-cap upload in JSON, like every other /api error.
+
+        Flask's default 413 is an HTML page, which the frontend's fetch
+        wrapper can't read an error message out of - the user just saw the
+        raw status line ("REQUEST ENTITY TOO LARGE") with no clue which
+        file was the problem or what to do about it.
+        """
+        limit_gb = webapp_config.max_content_length / (1024**3)
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"That upload is over the {limit_gb:.0f} GB limit for a single "
+                        "request. Match footage is almost always what pushes it over - "
+                        "try one match at a time, or set RALLYAI_MAX_UPLOAD_MB and "
+                        "restart the server."
+                    )
+                }
+            ),
+            413,
+        )
 
     app.register_blueprint(
         create_api_blueprint(pipeline, import_config, webapp_config), url_prefix="/api"

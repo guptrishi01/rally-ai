@@ -98,6 +98,13 @@ class ImportConfig:
             are written by review.save_pending.
         db_path: Path to the SQLite database file.
         schema_path: Path to the SQL schema script applied on first use.
+        suggestion_workers: How many per-point Claude suggestion calls
+            pipeline.suggest() runs concurrently. Each call is independent
+            and stateless - one point's own shots in, one classification
+            out - so concurrency cannot change any individual answer, only
+            how long the batch takes. Bounded well below the account's
+            rate limit on purpose; raising it trades 429s (retried, but
+            slower) for throughput.
     """
 
     sheet_names: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SHEET_NAMES))
@@ -108,3 +115,4 @@ class ImportConfig:
     pending_dir: Path = _REPO_ROOT / "src" / "swingvision_import" / "pending"
     db_path: Path = _REPO_ROOT / "data" / "rallyai.db"
     schema_path: Path = _REPO_ROOT / "data" / "schema.sql"
+    suggestion_workers: int = 8

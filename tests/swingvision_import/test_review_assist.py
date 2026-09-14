@@ -109,10 +109,13 @@ def test_suggest_point_resolution_raises_on_api_failure():
     client = _FakeClient(raise_error=error)
 
     with pytest.raises(SuggestionError) as exc_info:
-        suggest_point_resolution(client, SuggestionConfig(), _point(), _shots())
+        suggest_point_resolution(
+            client, SuggestionConfig(max_attempts=1), _point(), _shots()
+        )
 
     assert exc_info.value.raw_response == ""
     assert "boom" in str(exc_info.value)
+    assert len(client.messages.calls) == 1  # max_attempts=1 means no retry
 
 
 def test_suggest_point_resolution_raises_on_invalid_json():
@@ -183,3 +186,111 @@ def test_suggest_point_resolution_strips_a_markdown_fence_before_parsing():
     suggestion = suggest_point_resolution(client, SuggestionConfig(), _point(), _shots())
 
     assert suggestion.point_end_type == "forced_error"
+
+
+class _FlakyMessages:
+    """Fails the first `failures` calls with `error`, then succeeds."""
+
+    def __init__(self, error: Exception, failures: int, response_text: str):
+        self.error = error
+        self.failures = failures
+        self.response_text = response_text
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if len(self.calls) <= self.failures:
+            raise self.error
+        return FakeMessage(content=[FakeTextBlock(text=self.response_text)])
+
+
+class _FlakyClient:
+    def __init__(self, error: Exception, failures: int, response_text: str):
+        self.messages = _FlakyMessages(error, failures, response_text)
+
+
+def _valid_response() -> str:
+    return json.dumps(
+        {"point_end_type": "winner", "reasoning": "clean", "confidence": "high"}
+    )
+
+
+def test_a_transient_failure_is_retried_and_can_still_succeed():
+    """Concurrency is what provokes 429s, so a rate-limited point has to be
+    able to recover - otherwise going parallel would quietly cost coverage."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    error = anthropic.RateLimitError(
+        message="slow down",
+        response=httpx.Response(429, request=request),
+        body=None,
+    )
+    client = _FlakyClient(error, failures=2, response_text=_valid_response())
+
+    suggestion = suggest_point_resolution(
+        client,
+        SuggestionConfig(max_attempts=3, retry_base_delay=0.0),
+        _point(),
+        _shots(),
+    )
+
+    assert suggestion.point_end_type == "winner"
+    assert len(client.messages.calls) == 3
+
+
+def test_a_non_transient_failure_is_not_retried():
+    """A 400 fails the same way every time - retrying it only spends money."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    error = anthropic.BadRequestError(
+        message="bad", response=httpx.Response(400, request=request), body=None
+    )
+    client = _FlakyClient(error, failures=99, response_text=_valid_response())
+
+    with pytest.raises(SuggestionError):
+        suggest_point_resolution(
+            client,
+            SuggestionConfig(max_attempts=5, retry_base_delay=0.0),
+            _point(),
+            _shots(),
+        )
+
+    assert len(client.messages.calls) == 1
+
+
+def test_a_malformed_response_is_not_retried():
+    """Nothing about the request was wrong, so asking again just pays twice
+    for the same deterministic mistake."""
+    client = _FlakyClient(RuntimeError("unused"), failures=0, response_text="not json")
+
+    with pytest.raises(SuggestionError):
+        suggest_point_resolution(
+            client,
+            SuggestionConfig(max_attempts=5, retry_base_delay=0.0),
+            _point(),
+            _shots(),
+        )
+
+    assert len(client.messages.calls) == 1
+
+
+def test_the_reviewers_own_note_reaches_the_prompt_as_context_not_instruction():
+    client = _FakeClient(response_text=_valid_response())
+
+    suggest_point_resolution(
+        client,
+        SuggestionConfig(),
+        _point(),
+        _shots(),
+        "part 2 restarts mid-game",
+    )
+
+    system = client.messages.calls[0]["system"]
+    assert "part 2 restarts mid-game" in system
+    assert "not as an answer" in system
+
+
+def test_no_note_means_no_note_block_in_the_prompt():
+    client = _FakeClient(response_text=_valid_response())
+
+    suggest_point_resolution(client, SuggestionConfig(), _point(), _shots(), "   ")
+
+    assert "background on how the data was" not in client.messages.calls[0]["system"]

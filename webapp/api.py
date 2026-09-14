@@ -38,7 +38,7 @@ from .config import WebAppConfig
 from .uploads import match_slug, pair_uploads, save_paired_videos, save_uploaded_xlsx
 
 _SET_NUMBERS = (1, 2, 3)
-_OVERRIDE_TEXT_FIELDS = ("pros", "cons", "notes", "location")
+_OVERRIDE_TEXT_FIELDS = ("pros", "cons", "notes", "location", "reviewer_note")
 _OVERRIDE_RATING_FIELDS = ("energy_rating", "mental_rating")
 
 
@@ -280,6 +280,12 @@ def create_api_blueprint(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        # Staging succeeded, so the loose .xlsx copies in data/uploads/ have
+        # done their job: pack them into one zip (measured ~40% smaller) and
+        # re-point the record at it. Footage is left alone on purpose - it's
+        # already entropy-coded, and Film Review streams it from disk.
+        pipeline.archive_sources(json_path)
+
         record = load_pending(json_path)
         connection = _connection()
         try:
@@ -354,6 +360,9 @@ def create_api_blueprint(
                 "date": record.date,
                 "opponent": record.opponent,
                 "import_notes": record.import_notes,
+                # Read back to the reviewer while they confirm points: it's
+                # the note they wrote about this very import.
+                "reviewer_note": record.reviewer_note,
                 "points": points,
             }
         )

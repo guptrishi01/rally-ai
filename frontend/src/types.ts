@@ -131,6 +131,9 @@ export interface PendingDetail {
   date: string
   opponent: string
   import_notes: string[]
+  /** What the uploader wrote about this import's own quirks, echoed back
+   *  so it's in front of them while they confirm the flagged points. */
+  reviewer_note: string | null
   points: FlaggedPoint[]
 }
 

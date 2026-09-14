@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import zipfile
 
 from swingvision_import.review import load_pending, unresolved_flags
 from tests.ai.conftest import FakeMessage, FakeTextBlock
@@ -440,3 +441,81 @@ def test_single_export_keeps_its_footage_filename_unchanged(
     assert body["upload_notes"] == []
     saved = [p.name for p in (webapp_config.media_dir / "2026-08-06_Alex").iterdir()]
     assert saved == ["anything.mp4"]
+
+
+def test_uploaded_exports_are_archived_after_staging(client, xlsx_bytes, webapp_config):
+    """The .xlsx copies in data/uploads/ have done their job once the match
+    is staged, so they get packed into one zip (~40% smaller)."""
+    response = _upload(client, xlsx_bytes)
+
+    assert response.status_code == 200
+    contents = sorted(p.name for p in webapp_config.uploads_dir.iterdir())
+    assert contents == ["2026-08-06_Alex_exports.zip"]
+    with zipfile.ZipFile(webapp_config.uploads_dir / contents[0]) as archive:
+        assert archive.namelist() == ["2026-08-06_Alex_export.xlsx"]
+
+
+def test_archiving_the_exports_leaves_the_footage_alone(
+    client, xlsx_bytes, webapp_config
+):
+    """Footage is already entropy-coded - zipping it measured at -0.0% and
+    would break Film Review, which streams the file straight off disk."""
+    response = _upload(
+        client, xlsx_bytes, video_files=(io.BytesIO(b"fake video bytes"), "clip.mp4")
+    )
+
+    assert response.status_code == 200
+    clip = webapp_config.media_dir / "2026-08-06_Alex" / "clip.mp4"
+    assert clip.exists()
+    assert clip.read_bytes() == b"fake video bytes"  # byte-for-byte, playable
+
+
+def test_review_still_works_against_an_archived_export(client, xlsx_bytes):
+    """The flagged-point walk re-parses the export for shot context, so it
+    has to keep working once that export lives inside a zip."""
+    upload = _upload(client, xlsx_bytes).get_json()
+
+    detail = client.get(f"/api/pending/{upload['json_filename']}").get_json()
+
+    assert detail["points"], "no flagged points came back"
+    assert any(p["shots"] for p in detail["points"]), "no shot context after archiving"
+
+
+def test_an_over_cap_upload_returns_a_json_error_not_an_html_page(
+    xlsx_bytes, import_config, tmp_path
+):
+    """Flask's stock 413 is HTML, which the frontend's fetch wrapper can't
+    read a message out of - the user just saw the bare status line."""
+    from webapp.app import create_app
+    from webapp.config import WebAppConfig
+
+    tiny_cap = WebAppConfig(
+        uploads_dir=tmp_path / "uploads",
+        media_dir=tmp_path / "media",
+        max_content_length=1024,  # 1 KB, so the fixture export is over it
+    )
+    app = create_app(import_config=import_config, webapp_config=tiny_cap)
+    with app.test_client() as client:
+        response = _upload(client, xlsx_bytes)
+
+    assert response.status_code == 413
+    assert response.is_json
+    error = response.get_json()["error"]
+    assert "GB limit" in error
+    assert "RALLYAI_MAX_UPLOAD_MB" in error  # tells them how to raise it
+
+
+def test_the_upload_cap_can_be_raised_by_environment_variable(monkeypatch):
+    from webapp.config import WebAppConfig
+
+    monkeypatch.setenv("RALLYAI_MAX_UPLOAD_MB", "64")
+    assert WebAppConfig().max_content_length == 64 * 1024 * 1024
+
+
+def test_a_nonsense_upload_cap_falls_back_to_the_default(monkeypatch):
+    """A typo in an env var must not silently shrink the limit to something
+    that rejects every real upload."""
+    from webapp.config import WebAppConfig
+
+    monkeypatch.setenv("RALLYAI_MAX_UPLOAD_MB", "lots")
+    assert WebAppConfig().max_content_length == 32 * 1024 * 1024 * 1024

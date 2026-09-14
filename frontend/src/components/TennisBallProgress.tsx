@@ -8,7 +8,10 @@ interface TennisBallProgressProps {
 
 /** A small drawn ball - seam and all - rather than the 🎾 emoji, which
  *  rendered as a different picture on every platform and clashed with the
- *  rest of the type. */
+ *  rest of the type. Aero lime with a navy seam: the one place on the cream
+ *  page where that lime is doing exactly the job it does on the racquet,
+ *  and it carries its own dark outline so it never dissolves into the
+ *  paper the way lime type would. */
 function Ball({ spin }: { spin: boolean }) {
   return (
     <motion.svg
@@ -19,12 +22,19 @@ function Ball({ spin }: { spin: boolean }) {
       animate={spin ? { rotate: 360 } : { rotate: 0 }}
       transition={spin ? { duration: 1.6, ease: 'linear', repeat: Infinity } : { duration: 0.4 }}
     >
-      <circle cx="12" cy="12" r="10" fill="var(--color-accent)" />
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+        fill="var(--color-spark)"
+        stroke="var(--color-navy)"
+        strokeWidth="1.5"
+      />
       <path
         d="M4 5c4 3 4 11 0 14M20 5c-4 3-4 11 0 14"
         fill="none"
-        stroke="var(--color-paper-3)"
-        strokeWidth="1.6"
+        stroke="var(--color-navy)"
+        strokeWidth="1.5"
         strokeLinecap="round"
       />
     </motion.svg>
@@ -58,7 +68,10 @@ export default function TennisBallProgress({ status, label }: TennisBallProgress
     <div className="w-full py-2">
       <div className="relative h-px w-full bg-[var(--color-line-strong)]">
         <motion.div
-          className="absolute inset-y-0 left-0 bg-[var(--color-accent)]"
+          className="absolute inset-y-0 left-0 transition-colors duration-500"
+          style={{
+            background: status === 'done' ? 'var(--color-win)' : 'var(--color-accent)',
+          }}
           animate={{ width: `${percent}%` }}
           transition={{ type: 'spring', stiffness: 90, damping: 20 }}
         />

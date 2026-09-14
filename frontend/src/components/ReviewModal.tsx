@@ -168,9 +168,21 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
           </button>
 
           {error && (
-            <p className="mt-4 text-[14px]" style={{ color: 'var(--color-clay)' }}>
+            <p className="mt-4 text-[14px]" style={{ color: 'var(--color-loss)' }}>
               {error}
             </p>
+          )}
+
+          {/* The uploader's own note about this import, kept in view for the
+              whole walk-through - it usually explains the very points that
+              got flagged. */}
+          {detail.reviewer_note && (
+            <div className="panel-sunk mt-5 p-4">
+              <p className="eyebrow">Your note on this import</p>
+              <p className="mt-2 whitespace-pre-line text-[14px] leading-relaxed">
+                {detail.reviewer_note}
+              </p>
+            </div>
           )}
 
           <AnimatePresence mode="wait">
@@ -193,7 +205,7 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                     initial={{ opacity: 0, y: -4 }}
                     animate={{ opacity: 1, y: 0 }}
                     className="eyebrow"
-                    style={{ color: won ? 'var(--color-teal)' : 'var(--color-clay)' }}
+                    style={{ color: won ? 'var(--color-win)' : 'var(--color-loss)' }}
                   >
                     {won ? 'Counts as won' : 'Counts as lost'}
                   </motion.span>
@@ -310,7 +322,7 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                 animate={{ opacity: 1, y: 0 }}
                 className="mt-8 border-t border-[var(--color-line)] pt-8"
               >
-                <p className="h3" style={{ color: 'var(--color-teal)' }}>
+                <p className="h3" style={{ color: 'var(--color-win)' }}>
                   Every flagged point has a decision on it.
                 </p>
                 <p className="lede mt-3 text-[15px]">

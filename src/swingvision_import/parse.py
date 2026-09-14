@@ -8,7 +8,7 @@ headers only requires a config change, not a rewrite here.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from openpyxl import load_workbook
 
@@ -132,11 +132,17 @@ class SwingVisionParser:
         """
         self._config = config
 
-    def parse(self, xlsx_path: Path) -> RawMatchExport:
+    def parse(self, xlsx_path: Path | IO[bytes]) -> RawMatchExport:
         """Parses a SwingVision export file into raw dataclasses.
 
+        Accepts an open binary stream as well as a path, so an export that
+        has been packed into a zip (see pipeline.archive_sources) can be
+        re-parsed straight from the archive rather than extracted to a
+        temporary file first.
+
         Args:
-            xlsx_path: Path to the exported .xlsx file.
+            xlsx_path: Path to the exported .xlsx file, or an open
+                binary stream of its bytes.
 
         Returns:
             The parsed settings, sets, games, points, and shots.

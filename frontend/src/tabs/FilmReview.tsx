@@ -70,7 +70,7 @@ function ClipCard({ match, videos, index }: MatchWithVideos & { index: number })
           </div>
           <span
             className="eyebrow shrink-0"
-            style={{ color: won ? 'var(--color-teal)' : 'var(--color-clay)' }}
+            style={{ color: won ? 'var(--color-win)' : 'var(--color-loss)' }}
           >
             {won ? 'Won' : 'Lost'}
           </span>

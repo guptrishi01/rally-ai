@@ -5,8 +5,8 @@ import { api } from '../api'
 import type { ShotPoint } from '../types'
 import Skeleton from './Skeleton'
 
-const COLOR_WON = '#1e9e8a'
-const COLOR_LOST = '#bc5b45'
+const COLOR_WON = '#2b752f' // --color-win
+const COLOR_LOST = '#b00512' // --color-loss
 const SCENE_RADIUS = 4.5
 
 type PlacedShot = { x: number; y: number; z: number; point_won: boolean; label: string }
@@ -111,8 +111,8 @@ export default function ShotMap() {
           <Grid
             args={[SCENE_RADIUS * 2.4, SCENE_RADIUS * 2.4]}
             position={[0, -SCENE_RADIUS - 0.5, 0]}
-            cellColor="#dad3c4"
-            sectionColor="#b3aa99"
+            cellColor="#cfcbbd"
+            sectionColor="#7e8496"
             fadeDistance={34}
           />
           <Shots points={points} hovered={hovered} onHover={setHovered} />

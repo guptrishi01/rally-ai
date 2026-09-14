@@ -56,7 +56,7 @@ export default function StickyNote({ match, selected, onClick }: StickyNoteProps
         <span className="h3 truncate">{match.opponent}</span>
         <span
           className="eyebrow shrink-0"
-          style={{ color: won ? 'var(--color-teal)' : 'var(--color-clay)' }}
+          style={{ color: won ? 'var(--color-win)' : 'var(--color-loss)' }}
         >
           {won ? 'Won' : 'Lost'}
         </span>

@@ -271,7 +271,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
               className="mt-8"
             >
               <Panel className="p-8" spotlight>
-                <p className="eyebrow" style={{ color: 'var(--color-teal)' }}>
+                <p className="eyebrow" style={{ color: 'var(--color-win)' }}>
                   On the record
                 </p>
                 <p className="h2 mt-4">
@@ -373,6 +373,35 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                 ))}
               </div>
 
+              {/* The one field that exists for the AI rather than the record:
+                  whatever the reconstruction can't see for itself. It matters
+                  most exactly when several exports are involved, so the
+                  prompt says so and the placeholder changes to match. */}
+              <label className="block">
+                <div className="flex items-baseline justify-between">
+                  <span className="field-label">
+                    Notes for the review &mdash; anything odd about this import
+                  </span>
+                  <span className="eyebrow num">
+                    {exportNames.length > 1 ? `${exportNames.length} parts` : 'optional'}
+                  </span>
+                </div>
+                <textarea
+                  name="reviewer_note"
+                  rows={3}
+                  className="field resize-y leading-relaxed"
+                  placeholder={
+                    exportNames.length > 1
+                      ? 'e.g. part 2 restarts mid-game; I switched ends between files; the last game of part 1 is repeated at the start of part 2.'
+                      : 'e.g. the recording cut out at 3-2; a let was replayed but tracked as a point; I was tracked as the guest, not the host.'
+                  }
+                />
+                <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
+                  Read by the coach when it suggests a call on a flagged point, and shown back
+                  to you during review. It never resolves a flag on its own.
+                </p>
+              </label>
+
               <div className="grid gap-6 sm:grid-cols-2">
                 <label>
                   <span className="field-label">Energy rating (1&ndash;5)</span>
@@ -391,7 +420,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
                     className="text-[14px]"
-                    style={{ color: 'var(--color-clay)' }}
+                    style={{ color: 'var(--color-loss)' }}
                   >
                     {formError}
                   </motion.p>

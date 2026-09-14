@@ -14,8 +14,8 @@ interface StatTileProps {
 
 const ACCENT_COLORS: Record<NonNullable<StatTileProps['accent']>, string> = {
   ink: 'var(--color-ink)',
-  good: 'var(--color-teal)',
-  critical: 'var(--color-clay)',
+  good: 'var(--color-win)',
+  critical: 'var(--color-loss)',
   accent: 'var(--color-accent)',
 }
 

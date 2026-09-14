@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 import anthropic
@@ -36,10 +37,20 @@ class SuggestionConfig:
     Attributes:
         model: Claude model id.
         max_tokens: Max output tokens per call.
+        max_attempts: How many times to try a call whose failure was
+            transient (rate limit, overload, connection drop). Suggestions
+            run concurrently, which is exactly what provokes 429s, and a
+            dropped suggestion is a point the reviewer has to judge with
+            less context - so a bounded retry buys real thoroughness.
+            1 disables retrying.
+        retry_base_delay: Seconds for the first backoff; doubles per
+            attempt. Kept small since callers are waiting on a batch.
     """
 
     model: str = "claude-sonnet-5"
     max_tokens: int = 512
+    max_attempts: int = 3
+    retry_base_delay: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -75,7 +86,9 @@ class SuggestionError(RuntimeError):
         self.raw_response = raw_response
 
 
-def _build_prompt(point: PointRecord, shot_context: list[RawShotRow]) -> str:
+def _build_prompt(
+    point: PointRecord, shot_context: list[RawShotRow], reviewer_note: str | None = None
+) -> str:
     """Builds the prompt describing one flagged point's shot sequence.
 
     Args:
@@ -84,6 +97,12 @@ def _build_prompt(point: PointRecord, shot_context: list[RawShotRow]) -> str:
             labeled as unreliable.
         shot_context: The point's raw shots — already-tracked structured
             data (stroke, direction, in/out/net result), not video.
+        reviewer_note: The human's own account of anything odd about this
+            import (see MatchRecord.reviewer_note) — typically why the
+            match arrived as several files. Included so a suggestion can
+            account for something the shot data alone can't show, e.g. a
+            second export that restarts mid-game. Omitted from the prompt
+            entirely when there isn't one.
 
     Returns:
         The complete system prompt.
@@ -101,9 +120,20 @@ def _build_prompt(point: PointRecord, shot_context: list[RawShotRow]) -> str:
         ],
         indent=2,
     )
+    # Deliberately framed as background, not instruction: the note explains
+    # how the recording was captured, it doesn't get to dictate the call.
+    note_block = (
+        "The person who recorded this match wrote the following about the "
+        "import itself — treat it as background on how the data was "
+        "captured, not as an answer:\n"
+        f"{reviewer_note.strip()}\n\n"
+        if reviewer_note and reviewer_note.strip()
+        else ""
+    )
     return (
         "You are a tennis point-outcome analyst. Given the shot-by-shot "
         "sequence for one point, suggest the most likely classification.\n\n"
+        f"{note_block}"
         f'Current best guess: "{point.point_end_type}" — unreliable, this is '
         "exactly what you're being asked to double check.\n\n"
         f"Shot sequence (JSON):\n{shots_json}\n\n"
@@ -117,11 +147,31 @@ def _build_prompt(point: PointRecord, shot_context: list[RawShotRow]) -> str:
     )
 
 
+def _is_transient(exc: anthropic.APIError) -> bool:
+    """Whether a failed call is worth trying again.
+
+    Rate limits, connection drops, and the server's own 5xx/overloaded
+    responses are: nothing about the request was wrong. A 400 or an auth
+    failure is not - retrying those just spends money to fail identically.
+
+    Args:
+        exc: The error raised by the client.
+
+    Returns:
+        True if the same call could plausibly succeed on a retry.
+    """
+    if isinstance(exc, (anthropic.RateLimitError, anthropic.APIConnectionError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
 def suggest_point_resolution(
     client: AnthropicClientLike,
     config: SuggestionConfig,
     point: PointRecord,
     shot_context: list[RawShotRow],
+    reviewer_note: str | None = None,
 ) -> PointSuggestion:
     """Asks Claude to suggest a refined classification for one flagged point.
 
@@ -131,6 +181,8 @@ def suggest_point_resolution(
         config: Model/token settings.
         point: The flagged point to get a suggestion for.
         shot_context: The point's raw shots, for Claude to reason over.
+        reviewer_note: Optional human account of anything odd about this
+            import (see _build_prompt).
 
     Returns:
         The suggested resolution. Never applied automatically — the caller
@@ -141,16 +193,29 @@ def suggest_point_resolution(
         SuggestionError: If the API call itself fails, or its response
             isn't valid JSON matching the expected shape.
     """
-    system_prompt = _build_prompt(point, shot_context)
-    try:
-        response = client.messages.create(
-            model=config.model,
-            max_tokens=config.max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": "Suggest the classification now."}],
-        )
-    except anthropic.APIError as exc:
-        raise SuggestionError("", exc) from exc
+    system_prompt = _build_prompt(point, shot_context, reviewer_note)
+    response = None
+    for attempt in range(1, max(1, config.max_attempts) + 1):
+        try:
+            response = client.messages.create(
+                model=config.model,
+                max_tokens=config.max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": "Suggest the classification now."}],
+            )
+            break
+        except anthropic.APIError as exc:
+            if attempt >= max(1, config.max_attempts) or not _is_transient(exc):
+                raise SuggestionError("", exc) from exc
+            delay = config.retry_base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                "Transient suggestion failure (attempt %d/%d), retrying in %.1fs: %s",
+                attempt,
+                config.max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
 
     raw_text = ""
     try:
