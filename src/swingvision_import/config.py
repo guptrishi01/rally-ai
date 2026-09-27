@@ -65,6 +65,8 @@ DEFAULT_COLUMN_ALIASES: dict[str, dict[str, list[str]]] = {
         "shot_type": ["Type"],
         "stroke": ["Stroke"],
         "result": ["Result"],
+        "video_time": ["Video Time"],
+        "hit_side": ["Hit Side"],
     },
 }
 

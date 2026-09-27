@@ -10,6 +10,7 @@ import zipfile
 import pytest
 from openpyxl import Workbook
 
+from swingvision_import import footage
 from swingvision_import.load import UnresolvedReviewError
 from swingvision_import.pipeline import SwingVisionImportPipeline
 from swingvision_import.records import MatchRecord
@@ -902,3 +903,266 @@ def test_archiving_a_multi_part_match_keeps_play_order(
     assert record.source_files == ["set1.xlsx", "set2.xlsx"]
     # And the merged re-parse still resolves every point's provenance.
     assert pipeline.shots_by_point(record)
+
+
+# ---------------------------------------------------------------------------
+# Footage verification, end to end
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def timed_xlsx(tmp_path):
+    """A two-point non-Pro export whose shots carry footage timing."""
+    workbook = Workbook()
+    sets_sheet = workbook.active
+    sets_sheet.title = "Sets"
+    sets_sheet.append(["Set", "Host Score", "Guest Score", "Set Winner"])
+    sets_sheet.append([1, 6, 4, "host"])
+    workbook.create_sheet("Games").append(["Game", "Set", "Server", "Game Winner"])
+    workbook.create_sheet("Points").append(
+        ["Point", "Game", "Set", "Match Server", "Point Winner", "Detail"]
+    )
+    shot_rows = [
+        # point, shot, player, type, stroke, result, video_time, hit_side
+        [1, 1, "Test Player", "first_serve", "Serve", "In", 30.0, "near"],
+        [1, 2, "Test Opponent", "first_return", "Backhand", "Net", 31.4, "far"],
+        [2, 1, "Test Player", "first_serve", "Serve", "In", 60.0, "near"],
+        [2, 2, "Test Opponent", "first_return", "Forehand", "In", 61.2, "far"],
+        [2, 3, "Test Player", "in_play", "Forehand", "Out", 62.6, "near"],
+    ]
+    add_settings_and_shots_sheets(workbook, shot_rows=shot_rows)
+    path = tmp_path / "timed_export.xlsx"
+    workbook.save(path)
+    return path
+
+
+class _StubFootageClient:
+    """Answers every point with a scripted verdict, keyed by call order."""
+
+    def __init__(self, verdicts):
+        self._verdicts = list(verdicts)
+        self.calls = 0
+        outer = self
+
+        class _Messages:
+            def create(self, **kwargs):
+                outer.calls += 1
+                payload = outer._verdicts.pop(0) if outer._verdicts else {}
+                body = {
+                    "footage_usable": True,
+                    "server_seen": "tracked",
+                    "winner": "tracked",
+                    "point_end_type": "winner",
+                    "tracked_at_net": "unclear",
+                    "confidence": "high",
+                    "reasoning": "scripted",
+                }
+                body.update(payload)
+                message = FakeMessage(content=[FakeTextBlock(text=json.dumps(body))])
+                message.usage = type("U", (), {"input_tokens": 1000, "output_tokens": 100})()
+                message.stop_reason = "end_turn"
+                return message
+
+        class _Beta:
+            messages = _Messages()
+
+        self.beta = _Beta()
+
+
+def _no_frames(_video, _window):
+    """Frame extraction stand-in: the video itself isn't what's under test."""
+    return [footage.Frame("finish", 0.0, b"\xff\xd8jpeg")]
+
+
+def _stage_timed(pipeline, timed_xlsx):
+    return pipeline.ingest(timed_xlsx, date="2026-08-06", opponent="Alex", result="W")
+
+
+def test_footage_agreement_clears_the_flag_and_records_who_cleared_it(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    recorded = {
+        (p.game_number, p.point_number): (p.point_won, p.point_end_type)
+        for s in load_pending(json_path).sets
+        for p in s.points
+    }
+    # Script each verdict to match what reconstruction recorded.
+    verdicts = [
+        {"winner": "tracked" if won else "opponent", "point_end_type": end_type}
+        for won, end_type in recorded.values()
+    ]
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient(verdicts),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert summary.agreed == len(recorded)
+    assert summary.disagreed == 0
+    record = load_pending(json_path)
+    for set_record in record.sets:
+        for point in set_record.points:
+            assert point.needs_review is False
+            assert point.confirmed_by == "footage"
+            assert point.footage_check["verdict"] == "agrees"
+
+
+def test_footage_disagreement_leaves_the_point_for_a_human(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """A single source contradicting the record is never enough to change
+    it - the verdict is attached as context and the flag stays up."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient(
+            [{"winner": "opponent", "point_end_type": "forced_error", "reasoning": "passed"}] * 5
+        ),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert summary.agreed == 0
+    record = load_pending(json_path)
+    flagged = [p for s in record.sets for p in s.points if p.needs_review]
+    assert flagged, "disagreement must not clear the flag"
+    check = flagged[0].footage_check
+    assert check["verdict"] == "disagrees"
+    assert check["point_end_type"] == "forced_error"
+    assert flagged[0].confirmed_by is None
+    # And nothing the reconstruction recorded was overwritten.
+    assert flagged[0].point_end_type != "forced_error"
+
+
+def test_an_unclear_verdict_leaves_the_point_alone(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([{"confidence": "low"}] * 5),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert summary.inconclusive > 0 and summary.agreed == 0
+    record = load_pending(json_path)
+    assert all(p.needs_review for s in record.sets for p in s.points)
+
+
+def test_condensed_footage_is_refused_before_any_call_is_made(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """The guard has to fire before spending: frames from the wrong rally
+    would produce confident nonsense."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 12.0)  # far too short
+    client = _StubFootageClient([])
+
+    with pytest.raises(footage.FootageAlignmentError):
+        pipeline.verify_footage(
+            client, json_path, [tmp_path / "video.mp4"], frame_source=_no_frames
+        )
+
+    assert client.calls == 0
+
+
+def test_a_second_run_does_not_pay_to_recheck_the_same_points(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+    args = dict(frame_source=_no_frames)
+
+    first = pipeline.verify_footage(
+        _StubFootageClient([{"confidence": "low"}] * 5),
+        json_path,
+        [tmp_path / "video.mp4"],
+        **args,
+    )
+    second_client = _StubFootageClient([{"confidence": "low"}] * 5)
+    second = pipeline.verify_footage(
+        second_client, json_path, [tmp_path / "video.mp4"], **args
+    )
+
+    assert first.checked > 0
+    assert second.checked == 0 and second_client.calls == 0
+
+
+def test_the_run_reports_what_it_actually_cost(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([]),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert summary.input_tokens == 1000 * summary.checked
+    assert summary.usd > 0
+
+
+def test_widespread_server_mismatches_are_called_out(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """Every point reporting a different server than the export means the
+    footage probably isn't this match - say so rather than quietly
+    returning zero agreements."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([{"server_seen": "opponent"}] * 5),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert summary.server_mismatches == summary.checked
+    assert any("may not line up" in note for note in summary.notes)
+
+
+def test_progress_is_reported_as_points_complete(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+    seen = []
+
+    pipeline.verify_footage(
+        _StubFootageClient([]),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+        progress=lambda s: seen.append(s.checked),
+    )
+
+    assert seen == sorted(seen) and seen[-1] > 0

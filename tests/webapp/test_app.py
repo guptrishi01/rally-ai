@@ -4,6 +4,7 @@ import io
 import json
 import zipfile
 
+from swingvision_import import footage
 from swingvision_import.review import load_pending, unresolved_flags
 from tests.ai.conftest import FakeMessage, FakeTextBlock
 
@@ -519,3 +520,87 @@ def test_a_nonsense_upload_cap_falls_back_to_the_default(monkeypatch):
 
     monkeypatch.setenv("RALLYAI_MAX_UPLOAD_MB", "lots")
     assert WebAppConfig().max_content_length == 32 * 1024 * 1024 * 1024
+
+
+def _timed_xlsx_bytes() -> bytes:
+    """A non-Pro export whose shots carry footage timing."""
+    from openpyxl import Workbook
+
+    from tests.swingvision_import.conftest import add_settings_and_shots_sheets
+
+    workbook = Workbook()
+    sets_sheet = workbook.active
+    sets_sheet.title = "Sets"
+    sets_sheet.append(["Set", "Host Score", "Guest Score", "Set Winner"])
+    sets_sheet.append([1, 6, 4, "host"])
+    workbook.create_sheet("Games").append(["Game", "Set", "Server", "Game Winner"])
+    workbook.create_sheet("Points").append(
+        ["Point", "Game", "Set", "Match Server", "Point Winner", "Detail"]
+    )
+    add_settings_and_shots_sheets(
+        workbook,
+        shot_rows=[
+            [1, 1, "Test Player", "first_serve", "Serve", "In", 30.0, "near"],
+            [1, 2, "Test Opponent", "first_return", "Backhand", "Net", 31.4, "far"],
+        ],
+    )
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_footage_status_reports_no_footage_when_none_was_uploaded(client):
+    upload = _upload(client, _timed_xlsx_bytes()).get_json()
+
+    status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
+
+    assert status["available"] is False
+    assert "No footage" in status["reason"]
+    assert status["eligible_points"] > 0
+
+
+def test_footage_status_refuses_a_condensed_export(client, monkeypatch):
+    """The real-world case: SwingVision's rallies-only video is a fraction
+    of the recording its timestamps refer to, so the check must refuse it
+    and say why rather than silently checking the wrong rallies."""
+    upload = _upload(
+        client,
+        _timed_xlsx_bytes(),
+        video_files=(io.BytesIO(b"fake"), "clip.mp4"),
+    ).get_json()
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 5.0)  # way too short
+
+    status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
+
+    assert status["available"] is False
+    assert "condensed" in status["reason"]
+
+
+def test_footage_status_quotes_a_cost_before_anything_is_spent(client, monkeypatch):
+    upload = _upload(
+        client,
+        _timed_xlsx_bytes(),
+        video_files=(io.BytesIO(b"fake"), "clip.mp4"),
+    ).get_json()
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
+
+    assert status["available"] is True
+    assert status["estimate_usd"] > 0
+    assert status["model"] == "claude-opus-5"
+
+
+def test_starting_a_check_without_footage_is_refused(client):
+    upload = _upload(client, _timed_xlsx_bytes()).get_json()
+
+    response = client.post(f"/api/pending/{upload['json_filename']}/footage")
+
+    assert response.status_code == 400
+    assert "No footage" in response.get_json()["error"]
+
+
+def test_a_missing_pending_file_404s(client):
+    assert client.get("/api/pending/nope.json/footage").status_code == 404

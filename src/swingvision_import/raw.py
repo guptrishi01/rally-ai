@@ -135,6 +135,21 @@ class RawShotRow:
             column for it at all.
         result: Whether the shot landed — confirmed real values are "In",
             "Out", "Net" (not just In/Out).
+        video_time: Seconds from the start of the *full-length* recording
+            to this shot ("Video Time"). Confirmed against a real export:
+            it tracks the wall clock exactly (Settings start + video_time ==
+            the shot's own Start Time, zero drift over 180 points), so it
+            indexes the original recording - **not** SwingVision's
+            condensed rallies-only export, which is ~1/5 as long. None when
+            the column is absent.
+        hit_side: Which end of the court the hitter stood at, "near" or
+            "far" relative to the camera ("Hit Side"). Lets footage checks
+            say who is who without naming anyone. None when absent.
+        source_part: Index of the export this shot came from, for a match
+            merged from several files (see reconstruct.merge_shots). Each
+            part's video_time is relative to *that part's own* recording,
+            so this is what says which video a timestamp belongs to. 0 for
+            a single-file match.
     """
 
     point_number: int
@@ -143,6 +158,9 @@ class RawShotRow:
     shot_type: str
     stroke: str
     result: str
+    video_time: float | None = None
+    hit_side: str | None = None
+    source_part: int = 0
 
 
 @dataclass

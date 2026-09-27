@@ -147,7 +147,7 @@ def _build_prompt(
     )
 
 
-def _is_transient(exc: anthropic.APIError) -> bool:
+def is_transient_api_error(exc: anthropic.APIError) -> bool:
     """Whether a failed call is worth trying again.
 
     Rate limits, connection drops, and the server's own 5xx/overloaded
@@ -205,7 +205,7 @@ def suggest_point_resolution(
             )
             break
         except anthropic.APIError as exc:
-            if attempt >= max(1, config.max_attempts) or not _is_transient(exc):
+            if attempt >= max(1, config.max_attempts) or not is_transient_api_error(exc):
                 raise SuggestionError("", exc) from exc
             delay = config.retry_base_delay * (2 ** (attempt - 1))
             logger.warning(

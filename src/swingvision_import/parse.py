@@ -21,6 +21,9 @@ from .raw import RawGameRow, RawMatchExport, RawPointRow, RawSetRow, RawSettings
 # configuration error, not silently coerced into a garbage value.
 _OPTIONAL_FIELDS: dict[str, frozenset[str]] = {
     "points": frozenset({"first_serve_in", "second_serve_in"}),
+    # Only footage verification needs these; an older or trimmed export
+    # without them still imports exactly as before.
+    "shots": frozenset({"video_time", "hit_side"}),
 }
 
 
@@ -94,6 +97,36 @@ def _cell(row: tuple, columns: dict[str, int], field_name: str) -> Any:
     """
     idx = columns.get(field_name)
     return row[idx] if idx is not None else None
+
+
+def _as_float(value: Any) -> float | None:
+    """Reads a numeric cell, tolerating blanks and stray text.
+
+    Args:
+        value: The raw cell value.
+
+    Returns:
+        The value as a float, or None if it's blank or not a number.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_side(value: Any) -> str | None:
+    """Normalizes a court-side cell to "near"/"far".
+
+    Args:
+        value: The raw cell value.
+
+    Returns:
+        "near" or "far", or None for anything else (blank, "out", ...).
+    """
+    side = str(value).strip().lower() if value is not None else ""
+    return side if side in {"near", "far"} else None
 
 
 def _as_bool(value: Any) -> bool | None:
@@ -274,6 +307,8 @@ class SwingVisionParser:
                     shot_type=str(_cell(row, columns, "shot_type")),
                     stroke=str(_cell(row, columns, "stroke")),
                     result=str(_cell(row, columns, "result")),
+                    video_time=_as_float(_cell(row, columns, "video_time")),
+                    hit_side=_as_side(_cell(row, columns, "hit_side")),
                 )
             )
         return shots

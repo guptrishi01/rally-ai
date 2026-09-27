@@ -120,8 +120,13 @@ def merge_shots(shots_by_file: list[list[RawShotRow]]) -> list[RawShotRow]:
     """
     merged: list[RawShotRow] = []
     offset = 0
-    for shots in shots_by_file:
-        merged.extend(replace(shot, point_number=shot.point_number + offset) for shot in shots)
+    for part, shots in enumerate(shots_by_file):
+        # source_part records which file - and so which recording - each
+        # shot's video_time is relative to.
+        merged.extend(
+            replace(shot, point_number=shot.point_number + offset, source_part=part)
+            for shot in shots
+        )
         file_max = max((shot.point_number for shot in shots), default=0)
         offset += file_max
     return merged

@@ -29,17 +29,28 @@ from stats.queries import (
     match_stats,
     update_journal_fields,
 )
+from swingvision_import import footage
 from swingvision_import.config import ImportConfig
 from swingvision_import.db import get_connection
 from swingvision_import.pipeline import SwingVisionImportPipeline
 from swingvision_import.review import ConfirmationError, load_pending, unresolved_flags
 
 from .config import WebAppConfig
+from .jobs import JobRegistry
 from .uploads import match_slug, pair_uploads, save_paired_videos, save_uploaded_xlsx
 
 _SET_NUMBERS = (1, 2, 3)
 _OVERRIDE_TEXT_FIELDS = ("pros", "cons", "notes", "location", "reviewer_note")
 _OVERRIDE_RATING_FIELDS = ("energy_rating", "mental_rating")
+
+# Footage-check settings a caller may override; anything else stays at
+# the module default so a request can't, say, aim it at another model
+# by accident.
+_FOOTAGE_OVERRIDES = frozenset({"model", "workers", "frame_width", "end_frames"})
+
+# Footage checks run for minutes, so they run on a thread and the UI
+# polls. Process-local by design - see webapp/jobs.py.
+_footage_jobs = JobRegistry()
 
 
 def _parse_first_server_by_set(form) -> dict[int, str] | None:
@@ -313,6 +324,37 @@ def create_api_blueprint(
             }
         )
 
+    @api.get("/pending")
+    def pending_matches():
+        """Lists staged matches still waiting on review.
+
+        Without this the review modal is only reachable in the same browser
+        session as the upload that staged it - a staged match whose tab was
+        closed could only be revisited by re-uploading the whole thing,
+        footage included.
+        """
+        pending_dir = import_config.pending_dir
+        if not pending_dir.is_dir():
+            return jsonify([])
+        staged = []
+        for json_path in sorted(pending_dir.glob("*.json")):
+            try:
+                record = load_pending(json_path)
+            except (OSError, ValueError):
+                continue  # a half-written or hand-edited file isn't fatal here
+            points = [p for set_record in record.sets for p in set_record.points]
+            staged.append(
+                {
+                    "json_filename": json_path.name,
+                    "date": record.date,
+                    "opponent": record.opponent,
+                    "total_points": len(points),
+                    "flags_remaining": sum(1 for p in points if p.needs_review),
+                    "confirmed_by_footage": sum(1 for p in points if p.confirmed_by == "footage"),
+                }
+            )
+        return jsonify(staged)
+
     @api.get("/pending/<path:json_filename>")
     def pending_detail(json_filename: str):
         json_path = _resolve_pending_path(json_filename)
@@ -341,6 +383,7 @@ def create_api_blueprint(
                         "net_approach": point.net_approach,
                         "ai_suggested_point_end_type": point.ai_suggested_point_end_type,
                         "ai_suggestion_reasoning": point.ai_suggestion_reasoning,
+                        "footage_check": point.footage_check,
                         "shots": [
                             {
                                 "shot_number": s.shot_number,
@@ -366,6 +409,156 @@ def create_api_blueprint(
                 "points": points,
             }
         )
+
+    def _match_videos(record) -> tuple[list[Path], str | None]:
+        """Finds one video per part for a staged match, in part order.
+
+        save_paired_videos names a multi-part match's clips `partNN__...`,
+        which is exactly the order footage checks need. A part with no clip -
+        or more than one, where a timestamp would be ambiguous - is reported
+        rather than guessed at.
+
+        Args:
+            record: The staged match record.
+
+        Returns:
+            (videos, reason). `videos` is empty when a check isn't possible,
+            and `reason` then says why in one sentence.
+        """
+        match_dir = webapp_config.media_dir / match_slug(record.date, record.opponent)
+        if not match_dir.is_dir():
+            return [], "No footage has been uploaded for this match."
+        clips = sorted(p for p in match_dir.iterdir() if p.is_file())
+        parts = len(record.source_files or [record.source_file or ""])
+        if parts <= 1:
+            usable = [p for p in clips if not p.name.startswith("unpaired__")]
+            if len(usable) != 1:
+                return [], (
+                    f"Expected one video for this match, found {len(usable)} - a footage "
+                    "check needs to know which recording the timestamps belong to."
+                )
+            return usable, None
+
+        videos: list[Path] = []
+        for index in range(parts):
+            matching = [p for p in clips if p.name.startswith(f"part{index + 1:02d}__")]
+            if len(matching) != 1:
+                return [], (
+                    f"Part {index + 1} has {len(matching)} videos - a footage check needs "
+                    "exactly one recording per export to place its timestamps."
+                )
+            videos.append(matching[0])
+        return videos, None
+
+    def _footage_status(record, json_path: Path) -> dict:
+        """Describes whether this match can be checked against footage.
+
+        Everything here is read-only and cheap (a duration probe per file),
+        so the review UI can show the true state - including *why* it can't
+        run - before anyone spends anything.
+
+        Args:
+            record: The staged match record.
+            json_path: Its pending JSON path.
+
+        Returns:
+            A dict for the review UI.
+        """
+        eligible = sum(
+            1
+            for set_record in record.sets
+            for point in set_record.points
+            if point.needs_review and point.source_point_number is not None
+        )
+        already = sum(
+            1
+            for set_record in record.sets
+            for point in set_record.points
+            if point.footage_check is not None
+        )
+        status = {
+            "available": False,
+            "reason": None,
+            "eligible_points": eligible,
+            "already_checked": already,
+            "estimate_usd": None,
+            "model": footage.FootageConfig().model,
+        }
+        videos, reason = _match_videos(record)
+        if reason:
+            status["reason"] = reason
+            return status
+
+        try:
+            exe = footage.ffmpeg_exe()
+            durations = [footage.probe_duration(video, exe) for video in videos]
+            shots_by_point = pipeline.shots_by_point(record) or {}
+            host_name = pipeline._host_name(record)
+            latest: dict[int, float] = {}
+            for shots in shots_by_point.values():
+                window = footage.plan_point(shots, host_name)
+                if window is not None:
+                    latest[window.part] = max(latest.get(window.part, 0.0), window.last_shot)
+            if not latest:
+                status["reason"] = (
+                    "This export has no per-shot video timestamps, so points can't be "
+                    "located in the footage."
+                )
+                return status
+            footage.check_alignment(latest, durations)
+        except footage.FootageAlignmentError as exc:
+            status["reason"] = str(exc)
+            return status
+        except footage.FootageError as exc:
+            status["reason"] = str(exc)
+            return status
+
+        remaining = max(0, eligible - already)
+        status["available"] = remaining > 0
+        status["estimate_usd"] = footage.estimate_cost(
+            remaining, footage.FootageConfig()
+        ).usd
+        if remaining == 0:
+            status["reason"] = "Every eligible point has already been checked against footage."
+        return status
+
+    @api.get("/pending/<path:json_filename>/footage")
+    def footage_status(json_filename: str):
+        json_path = _resolve_pending_path(json_filename)
+        if json_path is None:
+            return jsonify({"error": "Pending match not found."}), 404
+        status = _footage_status(load_pending(json_path), json_path)
+        status["job"] = _footage_jobs.snapshot(json_path.name)
+        return jsonify(status)
+
+    @api.post("/pending/<path:json_filename>/footage")
+    def start_footage_check(json_filename: str):
+        json_path = _resolve_pending_path(json_filename)
+        if json_path is None:
+            return jsonify({"error": "Pending match not found."}), 404
+        record = load_pending(json_path)
+        videos, reason = _match_videos(record)
+        if reason:
+            return jsonify({"error": reason}), 400
+
+        body = request.get_json(force=True, silent=True) or {}
+        config = footage.FootageConfig(
+            **{k: v for k, v in body.items() if k in _FOOTAGE_OVERRIDES}
+        )
+        client = get_anthropic_client()
+
+        def run():
+            return pipeline.verify_footage(
+                client,
+                json_path,
+                videos,
+                footage_config=config,
+                progress=lambda s: _footage_jobs.update(json_path.name, s),
+            )
+
+        if not _footage_jobs.start(json_path.name, run):
+            return jsonify({"error": "A footage check is already running for this match."}), 409
+        return jsonify(_footage_jobs.snapshot(json_path.name)), 202
 
     @api.post("/pending/<path:json_filename>/suggest")
     def suggest(json_filename: str):

@@ -17,11 +17,13 @@ import logging
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 
 from ai.client import AnthropicClientLike
 
 from . import (
     db,
+    footage,
     load,
     quality_check,
     reconstruct,
@@ -467,6 +469,209 @@ class SwingVisionImportPipeline:
         review.save_pending(record, self.config.pending_dir)
         logger.info("Generated %d suggestion(s) for %s", suggested_count, json_path)
         return record
+
+    def verify_footage(
+        self,
+        client,
+        json_path: Path,
+        videos: list[Path],
+        *,
+        footage_config: footage.FootageConfig | None = None,
+        progress: Callable[[footage.FootageRunSummary], None] | None = None,
+        frame_source: Callable[[Path, footage.PointWindow], list[footage.Frame]] | None = None,
+    ) -> footage.FootageRunSummary:
+        """Checks flagged points against the footage, auto-confirming agreement.
+
+        The second independent source the review gate never had:
+        reconstruct.py guesses an outcome from shot geometry, and this looks
+        at the video and judges the same point *without being told that
+        guess*. A point clears only when both say the same thing and the
+        footage verdict is high-confidence - one source is never enough,
+        the same rule that stops suggest() resolving anything. Disagreements
+        and anything unclear stay flagged, with the verdict attached so the
+        human review is better informed rather than skipped.
+
+        Spends real API money (one vision call per flagged point), so it is
+        opt-in and separate from ingest(), exactly like suggest().
+
+        Args:
+            client: An anthropic.Anthropic-shaped client, injected so tests
+                never hit the real API. Needs `beta.messages.create`.
+            json_path: A pending JSON file written by ingest().
+            videos: One video per part, in part order. A single-part match
+                takes a one-element list.
+            footage_config: Model, frame and concurrency settings.
+            progress: Called with a running summary as points complete, so
+                a UI can poll one.
+            frame_source: Override for frame extraction, so tests can drive
+                the whole flow without a video file.
+
+        Returns:
+            What the run did, including real token usage and cost.
+
+        Raises:
+            ValueError: If the record has no source file(s) to re-parse.
+            footage.FootageAlignmentError: If the videos cannot contain the
+                times the export recorded - the condensed-export case.
+        """
+        config = footage_config or footage.FootageConfig()
+        record = review.load_pending(json_path)
+        shots_by_point = self.shots_by_point(record)
+        if shots_by_point is None:
+            raise ValueError(f"{json_path}: record has no source file(s) to re-parse.")
+
+        host_name = self._host_name(record)
+        windows: dict[int, footage.PointWindow] = {}
+        for source_point, shots in shots_by_point.items():
+            window = footage.plan_point(shots, host_name)
+            if window is not None:
+                windows[source_point] = window
+
+        # Refuse footage that cannot contain these timestamps before
+        # spending anything: frames from the wrong rally would still produce
+        # a confident-sounding verdict, which is worse than no check at all.
+        latest_by_part: dict[int, float] = {}
+        for window in windows.values():
+            latest_by_part[window.part] = max(
+                latest_by_part.get(window.part, 0.0), window.last_shot
+            )
+        exe = footage.ffmpeg_exe()
+        durations = [footage.probe_duration(video, exe) for video in videos]
+        footage.check_alignment(latest_by_part, durations)
+
+        targets = [
+            (set_record, point)
+            for set_record in record.sets
+            for point in set_record.points
+            if point.needs_review
+            and point.source_point_number in windows
+            and point.footage_check is None
+        ]
+
+        summary = footage.FootageRunSummary()
+        if not targets:
+            return summary
+
+        switch = footage.FallbackSwitch(config.use_fallbacks)
+        extract = frame_source or (
+            lambda video, window: footage.frames_for_point(video, window, config, exe)
+        )
+
+        def check(point) -> footage.FootageVerdict:
+            window = windows[point.source_point_number]
+            frames = extract(videos[window.part], window)
+            return footage.judge_point(
+                client, config, window, frames, record.reviewer_note, switch
+            )
+
+        # One vision call per point, each independent and stateless - the
+        # same sanctioned ThreadPoolExecutor case as suggest() and
+        # ai/generate.py. Verdicts attach through an explicit future -> point
+        # map, never completion order, and results are tallied here on the
+        # main thread rather than in the workers.
+        workers = max(1, min(config.workers, len(targets)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(check, point): (set_record, point)
+                for set_record, point in targets
+            }
+            for done, future in enumerate(as_completed(futures), start=1):
+                set_record, point = futures[future]
+                try:
+                    verdict = future.result()
+                except footage.FootageError:
+                    logger.exception(
+                        "Footage check failed for set %d game %d point %d",
+                        set_record.set_number,
+                        point.game_number,
+                        point.point_number,
+                    )
+                    summary.failed += 1
+                else:
+                    window = windows[point.source_point_number]
+                    outcome = footage.compare(verdict, point, window)
+                    self._apply_verdict(point, verdict, outcome)
+                    summary.checked += 1
+                    summary.input_tokens += verdict.input_tokens
+                    summary.output_tokens += verdict.output_tokens
+                    expected = "tracked" if window.tracked_serving else "opponent"
+                    if verdict.server_seen not in (expected, "unclear"):
+                        summary.server_mismatches += 1
+                    if outcome == "agrees":
+                        summary.agreed += 1
+                    elif outcome == "disagrees":
+                        summary.disagreed += 1
+                    else:
+                        summary.inconclusive += 1
+                    summary.usd = footage.actual_cost(
+                        summary.input_tokens, summary.output_tokens, config.model
+                    )
+                # Save as we go: a run costs real money, and losing it to a
+                # crash at point 170 of 180 would mean paying for it twice.
+                if done % 10 == 0:
+                    review.save_pending(record, self.config.pending_dir)
+                if progress is not None:
+                    progress(summary)
+
+        # Proportional, with a floor: 3 of 180 is noise, but 2 of 2 is the
+        # whole run and worth saying out loud.
+        if summary.server_mismatches >= 2 and (
+            summary.server_mismatches > summary.checked // 10
+        ):
+            summary.notes.append(
+                f"{summary.server_mismatches} of {summary.checked} checked points showed a "
+                "different server than the export recorded - this footage may not line up "
+                "with this export. Treat the results with suspicion."
+            )
+        review.save_pending(record, self.config.pending_dir)
+        logger.info(
+            "Footage check on %s: %d agreed, %d disagreed, %d inconclusive, %d failed ($%.2f)",
+            json_path.name,
+            summary.agreed,
+            summary.disagreed,
+            summary.inconclusive,
+            summary.failed,
+            summary.usd,
+        )
+        return summary
+
+    @staticmethod
+    def _apply_verdict(point, verdict: footage.FootageVerdict, outcome: str) -> None:
+        """Records a footage verdict, clearing the flag only on agreement.
+
+        Args:
+            point: The point that was checked.
+            verdict: What the footage said.
+            outcome: compare()'s answer.
+        """
+        point.footage_check = {
+            "verdict": outcome,
+            "point_end_type": verdict.point_end_type,
+            "point_won": verdict.winner == "tracked",
+            "confidence": verdict.confidence,
+            "reasoning": verdict.reasoning,
+            "at_net": verdict.tracked_at_net,
+            "server_seen": verdict.server_seen,
+        }
+        if outcome == "agrees":
+            # Nothing is overwritten: the footage agreed with what is
+            # already recorded, so only the flag clears.
+            point.needs_review = False
+            point.confirmed_by = "footage"
+
+    def _host_name(self, record: MatchRecord) -> str:
+        """The tracked player's name as it appears on this match's shots.
+
+        Args:
+            record: The staged match record.
+
+        Returns:
+            The Settings sheet's host name, or "" if it cannot be read.
+        """
+        raw_exports = sources.parse_sources(record, self._parser)
+        if not raw_exports or raw_exports[0].settings is None:
+            return ""
+        return raw_exports[0].settings.host_name
 
     def resolve(
         self,

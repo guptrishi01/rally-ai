@@ -4,3 +4,6 @@ jinja2>=3.1
 python-dotenv>=1.0
 flask>=3.0
 numpy>=1.26
+# Bundles a static ffmpeg binary, used to pull frames for footage checks
+# (swingvision_import/footage.py). Falls back to ffmpeg on PATH if absent.
+imageio-ffmpeg>=0.5

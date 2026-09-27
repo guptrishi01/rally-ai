@@ -106,12 +106,67 @@ export interface ImportResult {
   upload_notes: string[]
 }
 
+/** A match staged by an earlier upload and still awaiting review. */
+export interface StagedMatch {
+  json_filename: string
+  date: string
+  opponent: string
+  total_points: number
+  flags_remaining: number
+  confirmed_by_footage: number
+}
+
 export interface FlaggedPointShot {
   shot_number: number
   player: string
   type: string
   stroke: string
   result: string
+}
+
+/** What the footage check concluded for one point. A "disagrees" verdict
+ *  never overwrites anything - it is context for the human, exactly like
+ *  ai_suggested_point_end_type. */
+export interface FootageCheck {
+  verdict: 'agrees' | 'disagrees' | 'inconclusive'
+  point_end_type: string
+  point_won: boolean
+  confidence: string
+  reasoning: string
+  at_net: string
+  server_seen: string
+}
+
+export interface FootageRunSummary {
+  checked: number
+  agreed: number
+  disagreed: number
+  inconclusive: number
+  failed: number
+  server_mismatches: number
+  input_tokens: number
+  output_tokens: number
+  usd: number
+  notes: string[]
+}
+
+export interface FootageJob {
+  state: 'running' | 'done' | 'failed'
+  progress: FootageRunSummary | null
+  summary: FootageRunSummary | null
+  error: string | null
+}
+
+/** Whether this staged match can be checked against its footage, and what
+ *  that would cost - shown before anything is spent. */
+export interface FootageStatus {
+  available: boolean
+  reason: string | null
+  eligible_points: number
+  already_checked: number
+  estimate_usd: number | null
+  model: string
+  job: FootageJob | null
 }
 
 export interface FlaggedPoint {
@@ -123,6 +178,7 @@ export interface FlaggedPoint {
   net_approach: boolean
   ai_suggested_point_end_type: string | null
   ai_suggestion_reasoning: string | null
+  footage_check: FootageCheck | null
   shots: FlaggedPointShot[]
 }
 

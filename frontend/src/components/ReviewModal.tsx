@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { api } from '../api'
+import FootagePanel from './FootagePanel'
 import { POINT_END_TYPES, WINNING_END_TYPES, type FlaggedPoint, type PendingDetail } from '../types'
 
 interface ReviewModalProps {
@@ -173,6 +174,17 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
             </p>
           )}
 
+          <FootagePanel
+            jsonFilename={detail.json_filename}
+            onFinished={async () => {
+              // Points the footage confirmed are no longer flagged, so pull
+              // the queue again rather than walking ones already settled.
+              const fresh = await api.pendingDetail(detail.json_filename)
+              setPoints(fresh.points)
+              if (fresh.points.length === 0) onAllConfirmed()
+            }}
+          />
+
           {/* The uploader's own note about this import, kept in view for the
               whole walk-through - it usually explains the very points that
               got flagged. */}
@@ -210,6 +222,35 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                     {won ? 'Counts as won' : 'Counts as lost'}
                   </motion.span>
                 </div>
+
+                {current.footage_check && (
+                  <div className="panel-sunk mt-5 p-4">
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <p className="eyebrow">From the footage</p>
+                      <p
+                        className="eyebrow"
+                        style={{
+                          color:
+                            current.footage_check.verdict === 'disagrees'
+                              ? 'var(--color-loss)'
+                              : 'var(--color-dim)',
+                        }}
+                      >
+                        {current.footage_check.verdict === 'disagrees'
+                          ? 'Contradicts the tracker'
+                          : `Couldn't settle it (${current.footage_check.confidence})`}
+                      </p>
+                    </div>
+                    <p className="mt-2 text-[14px] leading-relaxed">
+                      {current.footage_check.verdict === 'disagrees' && (
+                        <strong>
+                          {current.footage_check.point_end_type.replace(/_/g, ' ')} —{' '}
+                        </strong>
+                      )}
+                      {current.footage_check.reasoning}
+                    </p>
+                  </div>
+                )}
 
                 {current.ai_suggested_point_end_type && (
                   <div className="panel-sunk mt-5 p-4">

@@ -126,8 +126,10 @@ def confirm_point(
         net_approach: Whether the tracked player approached the net.
 
     Returns:
-        The same record, with the matching point's fields updated and
-        needs_review cleared. Not saved to disk - the caller decides when
+        The same record, with the matching point's fields updated,
+        needs_review cleared, and confirmed_by set to "human" - so a
+        point a person signed off on stays distinguishable from one the
+        footage check cleared. Not saved to disk - the caller decides when
         to persist (see save_pending).
 
     Raises:
@@ -153,6 +155,7 @@ def confirm_point(
             point.point_won = point_won
             point.net_approach = net_approach
             point.needs_review = False
+            point.confirmed_by = "human"
             return record
 
     raise ConfirmationError(

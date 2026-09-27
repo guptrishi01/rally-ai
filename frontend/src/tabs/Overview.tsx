@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { api, ApiError } from '../api'
-import type { CareerStats, ImportResult, PendingDetail } from '../types'
+import type { CareerStats, ImportResult, PendingDetail, StagedMatch } from '../types'
 import Panel from '../components/Panel'
 import StatTile from '../components/StatTile'
 import Skeleton from '../components/Skeleton'
@@ -44,6 +44,9 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
   // Bumped on reset: remounting the form is what clears the dropzones' own
   // filename state, which a plain form.reset() can't reach.
   const [formKey, setFormKey] = useState(0)
+  // Matches staged by an earlier upload that still need reviewing - without
+  // this they'd be reachable only in the browser session that staged them.
+  const [staged, setStaged] = useState<StagedMatch[]>([])
   // Mirrors of what's currently selected in the two dropzones, purely so
   // the pairing preview can react as files are picked - the inputs
   // themselves still own the files, and FormData still reads them.
@@ -60,9 +63,40 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
     }
   }
 
+  async function loadStaged() {
+    try {
+      setStaged(await api.pendingMatches())
+    } catch {
+      setStaged([]) // a listing failure shouldn't block the upload form
+    }
+  }
+
   useEffect(() => {
     loadOverview()
+    loadStaged()
   }, [])
+
+  async function resumeReview(jsonFilename: string) {
+    setFormError(null)
+    try {
+      setPendingDetail(await api.pendingDetail(jsonFilename))
+      setImportResult({
+        json_filename: jsonFilename,
+        staged_label: 0,
+        date: '',
+        opponent: '',
+        flags: [],
+        import_notes: [],
+        parts: [],
+        upload_notes: [],
+      })
+      setPhase('reviewing')
+    } catch (err) {
+      setFormError(
+        err instanceof ApiError ? err.message : 'Failed to reopen that staged match.',
+      )
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -118,6 +152,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
     setFinalizedMatchId(null)
     setFormError(null)
     setPhase('idle')
+    loadStaged()
     setExportNames([])
     setVideoNames([])
     setFormKey((k) => k + 1)
@@ -248,6 +283,42 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
               finish confirming its flagged points.
             </p>
           </div>
+        </Reveal>
+      )}
+
+      {staged.length > 0 && (
+        <Reveal>
+          <section>
+            <SectionHead
+              index="Awaiting review"
+              title="Staged, not yet loaded"
+              lede="These were uploaded but still have points to confirm. Nothing reaches your career stats until every flag is cleared."
+            />
+            <div className="mt-6 space-y-3">
+              {staged.map((match) => (
+                <div
+                  key={match.json_filename}
+                  className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--color-line)] pt-4"
+                >
+                  <div>
+                    <p className="h3">{match.opponent || match.json_filename}</p>
+                    <p className="num mt-1 text-[12px] text-[var(--color-dim)]">
+                      {match.date} &middot; {match.flags_remaining} of {match.total_points} points
+                      still flagged
+                      {match.confirmed_by_footage > 0 &&
+                        ` · ${match.confirmed_by_footage} confirmed by footage`}
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => resumeReview(match.json_filename)}
+                  >
+                    Resume review
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
         </Reveal>
       )}
 

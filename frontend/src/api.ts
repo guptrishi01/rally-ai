@@ -1,10 +1,13 @@
 import type {
   CareerStats,
+  FootageJob,
+  FootageStatus,
   ImportResult,
   JournalFeedback,
   MatchStats,
   PendingDetail,
   ShotPoint,
+  StagedMatch,
 } from './types'
 
 export class ApiError extends Error {
@@ -69,11 +72,21 @@ export const api = {
   importMatch: (formData: FormData) =>
     request<ImportResult>('/api/import', { method: 'POST', body: formData }),
 
+  pendingMatches: () => request<StagedMatch[]>('/api/pending'),
+
   pendingDetail: (jsonFilename: string) =>
     request<PendingDetail>(`/api/pending/${encodeURIComponent(jsonFilename)}`),
 
   suggest: (jsonFilename: string) =>
     request<PendingDetail>(`/api/pending/${encodeURIComponent(jsonFilename)}/suggest`, {
+      method: 'POST',
+    }),
+
+  footageStatus: (jsonFilename: string) =>
+    request<FootageStatus>(`/api/pending/${encodeURIComponent(jsonFilename)}/footage`),
+
+  startFootageCheck: (jsonFilename: string) =>
+    request<FootageJob>(`/api/pending/${encodeURIComponent(jsonFilename)}/footage`, {
       method: 'POST',
     }),
 

@@ -72,6 +72,19 @@ class PointRecord:
             second silent auto-tagger.
         ai_suggestion_reasoning: The reasoning Claude gave for that
             suggestion, shown alongside it during review.
+        confirmed_by: How needs_review was cleared - "human" when a person
+            confirmed it in the review UI or the CLI, "footage" when the
+            footage check and the reconstruction independently agreed (see
+            footage.py). None while the point is still flagged. Staged-JSON
+            only, never a database column: it describes this import's
+            review, not the finished match.
+        footage_check: What the footage check concluded for this point, or
+            None if it hasn't been checked. A plain dict so it survives
+            to_dict/from_dict untouched, with keys: verdict ("agrees",
+            "disagrees", "inconclusive"), point_end_type, point_won,
+            confidence, reasoning, at_net, server_seen. A "disagrees"
+            verdict never overwrites anything - it is context for the human,
+            exactly like ai_suggested_point_end_type.
         source_point_number: The original SwingVision match-wide "Point"
             number this was reconstructed from (see reconstruct.py), or
             None for a point that came from a direct Points-sheet parse.
@@ -115,6 +128,8 @@ class PointRecord:
     notes: str | None = None
     ai_suggested_point_end_type: str | None = None
     ai_suggestion_reasoning: str | None = None
+    confirmed_by: str | None = None
+    footage_check: dict | None = None
     source_point_number: int | None = None
     review_answer: str | None = None
     resolved_point_end_type: str | None = None
