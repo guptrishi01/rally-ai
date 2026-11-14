@@ -83,9 +83,14 @@ def test_match_overrides_survive_the_full_ingest_then_finalize_round_trip(
     assert row == (5, "Aggressive on return games")
 
 
-def test_reingesting_the_same_match_overwrites_the_pending_file_at_the_same_path(
+def test_reingesting_the_same_export_overwrites_the_pending_file_at_the_same_path(
     synthetic_xlsx, import_config
 ):
+    """The same export staged twice is one match, so it must not duplicate.
+
+    CLAUDE.md's "never reprocess or duplicate by default" rule: correcting
+    the intake fields and re-staging should land back on the same file.
+    """
     pipeline = SwingVisionImportPipeline(import_config)
     first_path = pipeline.ingest(synthetic_xlsx, date="2026-08-06", opponent="Alex", result="W")
     second_path = pipeline.ingest(
@@ -94,6 +99,29 @@ def test_reingesting_the_same_match_overwrites_the_pending_file_at_the_same_path
 
     assert first_path == second_path
     assert list(import_config.pending_dir.glob("*.json")) == [first_path]
+    assert load_pending(first_path).pros == "Revised notes"
+
+
+def test_a_second_match_the_same_day_is_staged_beside_the_first_not_over_it(
+    synthetic_xlsx, tmp_path, import_config
+):
+    """Two different matches vs the same opponent on one day both survive.
+
+    This is the data-loss path the date_opponent filename used to have: the
+    second ingest silently destroyed the first. Distinguished from a
+    re-ingest by the export it came from, not by the name being taken.
+    """
+    other_xlsx = tmp_path / "second_match.xlsx"
+    other_xlsx.write_bytes(synthetic_xlsx.read_bytes())
+
+    pipeline = SwingVisionImportPipeline(import_config)
+    first_path = pipeline.ingest(synthetic_xlsx, date="2026-08-06", opponent="Alex", result="W")
+    second_path = pipeline.ingest(other_xlsx, date="2026-08-06", opponent="Alex", result="L")
+
+    assert first_path != second_path
+    assert second_path.name == "2026-08-06_Alex_2.json"
+    assert load_pending(first_path).result == "W"
+    assert load_pending(second_path).result == "L"
 
 
 def test_ingest_falls_back_to_shot_reconstruction_when_points_sheet_is_empty(

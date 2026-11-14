@@ -450,6 +450,24 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   prompt says so and the placeholder changes to match. */}
               <label className="block">
                 <div className="flex items-baseline justify-between">
+                  <span className="field-label">What you were wearing</span>
+                  <span className="eyebrow num">optional</span>
+                </div>
+                <input
+                  name="player_appearance"
+                  type="text"
+                  className="field"
+                  placeholder="e.g. grey shirt, black shorts"
+                />
+                <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
+                  Used only to pick you out of the frame during a footage check. You swap
+                  ends at changeovers, so which side of the court you are on is not a
+                  stable way to say which player is you &mdash; what you wore is.
+                </p>
+              </label>
+
+              <label className="block">
+                <div className="flex items-baseline justify-between">
                   <span className="field-label">
                     Notes for the review &mdash; anything odd about this import
                   </span>

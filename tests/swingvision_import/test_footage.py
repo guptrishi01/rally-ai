@@ -109,13 +109,18 @@ def _point(**overrides) -> PointRecord:
 def test_condensed_footage_is_refused_before_anything_is_spent():
     """SwingVision's rallies-only export is ~1/5 the length of the recording
     its Video Time values refer to, so seeking into it lands on the wrong
-    rally - which would still produce a confident-sounding verdict."""
+    rally - which would still produce a confident-sounding verdict.
+
+    The message has to name the cause, not just the mismatch: this export is
+    what the share sheet produces when the app's rally filter is left on, so
+    a refusal that does not say that leaves nothing to act on."""
     with pytest.raises(footage.FootageAlignmentError) as exc_info:
         footage.check_alignment({0: 2190.0}, [448.75])
 
     message = str(exc_info.value)
     assert "2190" in message and "449" in message
-    assert "condensed" in message
+    assert "rallies-only" in message
+    assert "filter" in message
 
 
 def test_full_length_footage_passes_alignment():
@@ -200,7 +205,11 @@ def test_the_judge_is_never_given_the_recorded_outcome():
     judge_params = set(inspect.signature(footage.judge_point).parameters)
     assert "point" not in judge_params and "record" not in judge_params
     prompt_params = set(inspect.signature(footage._prompt).parameters)
-    assert prompt_params == {"window", "reviewer_note"}
+    # An exact set, not a subset check: this is an allowlist, so anything
+    # new reaching the prompt has to be argued for here rather than slipping
+    # in. player_appearance says which player to look at, never what
+    # happened to them, so it cannot carry the outcome.
+    assert prompt_params == {"window", "reviewer_note", "player_appearance"}
 
 
 def test_the_prompt_gives_context_but_asserts_no_outcome():
@@ -452,3 +461,65 @@ def test_extracting_past_the_end_returns_what_exists_rather_than_failing(tiny_vi
 def test_a_missing_video_is_reported_clearly(tmp_path):
     with pytest.raises(footage.FootageError):
         footage.probe_duration(tmp_path / "nope.mp4")
+
+
+# ---------------------------------------------------------------------------
+# Identifying the tracked player by appearance
+# ---------------------------------------------------------------------------
+
+
+def test_the_prompt_describes_the_tracked_player_when_appearance_is_given():
+    client = _FakeClient()
+
+    footage.judge_point(
+        client,
+        footage.FootageConfig(),
+        _window(),
+        _frames(),
+        player_appearance="grey shirt, black shorts",
+    )
+
+    sent = client.messages.calls[0]
+    text = " ".join(
+        block["text"] for block in sent["messages"][0]["content"] if block["type"] == "text"
+    )
+    assert "grey shirt, black shorts" in text
+    assert "tracked_seen_at" in text
+
+
+def test_appearance_is_absent_from_the_prompt_when_it_was_not_supplied():
+    """Nothing is invented: no appearance means no description and no claim
+    to report one, rather than a placeholder the model might answer anyway."""
+    client = _FakeClient()
+
+    footage.judge_point(client, footage.FootageConfig(), _window(), _frames())
+
+    sent = client.messages.calls[0]
+    text = " ".join(
+        block["text"] for block in sent["messages"][0]["content"] if block["type"] == "text"
+    )
+    assert "described as" not in text
+    assert "tracked_seen_at" not in text
+
+
+def test_seeing_the_tracked_player_at_the_other_end_is_inconclusive():
+    """Ends swap at changeovers, so the described player turning up at the
+    end the sheet did not expect means these frames are of the wrong person.
+    That is a reason to stop, not to judge harder."""
+    verdict = _verdict(tracked_seen_at="far")
+
+    assert footage.compare(verdict, _point(), _window(tracked_side="near")) == "inconclusive"
+
+
+def test_seeing_the_tracked_player_at_the_expected_end_still_agrees():
+    verdict = _verdict(tracked_seen_at="near")
+
+    assert footage.compare(verdict, _point(), _window(tracked_side="near")) == "agrees"
+
+
+def test_an_unclear_sighting_does_not_block_agreement():
+    """Absence of an identification is not a contradiction - the check only
+    fires on a positive sighting at the wrong end."""
+    verdict = _verdict(tracked_seen_at="unclear")
+
+    assert footage.compare(verdict, _point(), _window(tracked_side="near")) == "agrees"

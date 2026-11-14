@@ -13,6 +13,7 @@ any needs_review=True point, exactly as before.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
@@ -37,10 +38,28 @@ from swingvision_import.review import ConfirmationError, load_pending, unresolve
 
 from .config import WebAppConfig
 from .jobs import JobRegistry
+from .pairing import PairingStore
+from .submissions import (
+    SubmissionConflict,
+    SubmissionError,
+    SubmissionStore,
+    assembled_uploads,
+    parse_content_range,
+    validate_metadata,
+)
 from .uploads import match_slug, pair_uploads, save_paired_videos, save_uploaded_xlsx
 
+logger = logging.getLogger(__name__)
+
 _SET_NUMBERS = (1, 2, 3)
-_OVERRIDE_TEXT_FIELDS = ("pros", "cons", "notes", "location", "reviewer_note")
+_OVERRIDE_TEXT_FIELDS = (
+    "pros",
+    "cons",
+    "notes",
+    "location",
+    "reviewer_note",
+    "player_appearance",
+)
 _OVERRIDE_RATING_FIELDS = ("energy_rating", "mental_rating")
 
 # Footage-check settings a caller may override; anything else stays at
@@ -109,6 +128,10 @@ def create_api_blueprint(
         The configured Blueprint, ready for app.register_blueprint.
     """
     api = Blueprint("api", __name__)
+    submissions = SubmissionStore(webapp_config.submissions_dir)
+    pairings = PairingStore(
+        webapp_config.pairing_path, code_ttl_seconds=webapp_config.pairing_code_ttl_seconds
+    )
 
     def _connection():
         return get_connection(import_config.db_path, import_config.schema_path)
@@ -241,26 +264,35 @@ def create_api_blueprint(
         )
         return jsonify([asdict(p) for p in points])
 
-    @api.post("/import")
-    def do_import():
-        # "xlsx_files" is the current field (one or many, a multi-part
-        # recording's exports); "xlsx_file" stays accepted so anything
-        # posting the older single-file field keeps working.
-        xlsx_files = [
-            f
-            for f in (*request.files.getlist("xlsx_files"), *request.files.getlist("xlsx_file"))
-            if f and f.filename
-        ]
-        if not xlsx_files:
-            return jsonify({"error": "Please choose at least one SwingVision .xlsx export."}), 400
+    def _stage_match(xlsx_files, video_files, fields) -> tuple[Path, dict]:
+        """Saves uploaded files, stages the match, and archives the exports.
 
-        date = request.form["date"]
-        opponent = request.form["opponent"]
-        result = request.form["result"]
+        The one path from uploaded bytes to a pending JSON. Both front
+        doors go through it - the browser's intake form (/import) and the
+        phone companion's /submissions/<id>/complete - so there is exactly
+        one place that decides single-vs-multi-part, builds ingest()'s
+        kwargs, and packs the exports afterwards.
 
-        video_files = [f for f in request.files.getlist("video_files") if f and f.filename]
+        Args:
+            xlsx_files: The SwingVision exports as FileStorage objects (at
+                least one; order doesn't matter, pair_uploads sorts them).
+            video_files: The footage, possibly empty.
+            fields: Anything with .get() carrying the intake fields - a
+                request.form, or a submission's metadata dict.
+
+        Returns:
+            (json_path, payload) where payload is the JSON body both
+            routes return.
+
+        Raises:
+            ValueError: If the export can't be parsed or reconstructed;
+                each caller decides what to answer.
+        """
+        date = fields["date"]
+        opponent = fields["opponent"]
+        result = fields["result"]
+
         pairing = pair_uploads(xlsx_files, video_files)
-
         xlsx_paths = [
             save_uploaded_xlsx(
                 part.xlsx, date=date, opponent=opponent, uploads_dir=webapp_config.uploads_dir
@@ -275,21 +307,18 @@ def create_api_blueprint(
             date=date,
             opponent=opponent,
             result=result,
-            first_server_by_set=_parse_first_server_by_set(request.form),
-            tracked_identity=request.form.get("tracked_identity") or None,
-            **_parse_match_overrides(request.form),
+            first_server_by_set=_parse_first_server_by_set(fields),
+            tracked_identity=fields.get("tracked_identity") or None,
+            **_parse_match_overrides(fields),
         )
-        try:
-            # Two or more exports are one interrupted recording, not two
-            # matches: merged into a single continuous reconstruction so a
-            # set spanning the file boundary gets one correct score.
-            json_path = (
-                pipeline.ingest_multi_part(xlsx_paths, **ingest_kwargs)
-                if pairing.is_multi_part
-                else pipeline.ingest(xlsx_paths[0], **ingest_kwargs)
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+        # Two or more exports are one interrupted recording, not two
+        # matches: merged into a single continuous reconstruction so a
+        # set spanning the file boundary gets one correct score.
+        json_path = (
+            pipeline.ingest_multi_part(xlsx_paths, **ingest_kwargs)
+            if pairing.is_multi_part
+            else pipeline.ingest(xlsx_paths[0], **ingest_kwargs)
+        )
 
         # Staging succeeded, so the loose .xlsx copies in data/uploads/ have
         # done their job: pack them into one zip (measured ~40% smaller) and
@@ -304,25 +333,157 @@ def create_api_blueprint(
         finally:
             connection.close()
 
-        return jsonify(
-            {
-                "json_filename": json_path.name,
-                "staged_label": staged_label,
-                "date": record.date,
-                "opponent": record.opponent,
-                "flags": unresolved_flags(record),
-                "import_notes": record.import_notes,
-                "parts": [
-                    {
-                        "index": part.index,
-                        "export": part.xlsx.filename,
-                        "videos": [video.filename for video in part.videos],
-                    }
-                    for part in pairing.parts
-                ],
-                "upload_notes": pairing.notes,
-            }
+        return json_path, {
+            "json_filename": json_path.name,
+            "staged_label": staged_label,
+            "date": record.date,
+            "opponent": record.opponent,
+            "flags": unresolved_flags(record),
+            "import_notes": record.import_notes,
+            "parts": [
+                {
+                    "index": part.index,
+                    "export": part.xlsx.filename,
+                    "videos": [video.filename for video in part.videos],
+                }
+                for part in pairing.parts
+            ],
+            "upload_notes": pairing.notes,
+        }
+
+    @api.post("/import")
+    def do_import():
+        # "xlsx_files" is the current field (one or many, a multi-part
+        # recording's exports); "xlsx_file" stays accepted so anything
+        # posting the older single-file field keeps working.
+        xlsx_files = [
+            f
+            for f in (*request.files.getlist("xlsx_files"), *request.files.getlist("xlsx_file"))
+            if f and f.filename
+        ]
+        if not xlsx_files:
+            return jsonify({"error": "Please choose at least one SwingVision .xlsx export."}), 400
+
+        video_files = [f for f in request.files.getlist("video_files") if f and f.filename]
+        try:
+            _, payload = _stage_match(xlsx_files, video_files, request.form)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(payload)
+
+    # --- Phone companion: pairing and submissions ----------------------
+
+    def _bearer_token() -> str:
+        """Reads the device token off the Authorization header.
+
+        Returns:
+            The token, or "" if the header is missing or not a Bearer one.
+        """
+        header = request.headers.get("Authorization", "")
+        scheme, _, token = header.partition(" ")
+        return token.strip() if scheme.lower() == "bearer" else ""
+
+    @api.before_request
+    def require_paired_device():
+        """Rejects any /submissions call that isn't from a paired device.
+
+        Enforced on localhost too, not just over --lan: the phone's own
+        requests arrive the same way tests' do, and a gate that switches
+        itself off depending on the interface is a gate nobody can reason
+        about. /pair itself is how a device gets a token, so it is exempt;
+        every other route here predates the LAN flag and is unaffected.
+        """
+        if not request.path.startswith("/api/submissions"):
+            return None
+        if pairings.is_paired(_bearer_token()):
+            return None
+        return jsonify({"error": "This device isn't paired. Pair it with a code first."}), 401
+
+    @api.post("/pair")
+    def pair():
+        body = request.get_json(force=True, silent=True) or {}
+        device = pairings.redeem(
+            str(body.get("code", "")).strip(), str(body.get("device_name", "") or "phone")
         )
+        if device is None:
+            return jsonify({"error": "That pairing code isn't valid any more."}), 401
+        return jsonify(
+            {"token": device.token, "device_name": device.name, "paired_at": device.paired_at}
+        )
+
+    @api.get("/submissions")
+    def list_submissions():
+        return jsonify([submission.to_dict() for submission in submissions.list()])
+
+    @api.post("/submissions")
+    def create_submission():
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            metadata = validate_metadata(body.get("metadata", {}))
+            submission, created = submissions.create(metadata, body.get("idempotency_key", ""))
+        except SubmissionError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(submission.to_dict()), 201 if created else 200
+
+    @api.put("/submissions/<submission_id>/files/<slot>")
+    def upload_chunk(submission_id: str, slot: str):
+        if submissions.get(submission_id) is None:
+            return jsonify({"error": "Unknown submission."}), 404
+        try:
+            start, end, total = parse_content_range(request.headers.get("Content-Range"))
+            result = submissions.write_chunk(
+                submission_id, slot, start, end, total, request.get_data()
+            )
+        except SubmissionConflict as exc:
+            return jsonify({"error": str(exc)}), 409
+        except SubmissionError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(result.to_dict())
+
+    @api.post("/submissions/<submission_id>/complete")
+    def complete_submission(submission_id: str):
+        submission = submissions.get(submission_id)
+        if submission is None:
+            return jsonify({"error": "Unknown submission."}), 404
+        if submission.json_filename:
+            # Already staged. A retry must not re-run ingest() and
+            # overwrite the pending JSON someone may be reviewing.
+            return jsonify(submission.to_dict())
+
+        if submission.incomplete_slots:
+            waiting = ", ".join(submission.incomplete_slots)
+            return jsonify({"error": f"Still waiting on bytes for: {waiting}"}), 409
+        if not submission.export_slots:
+            return (
+                jsonify({"error": "A submission needs at least one SwingVision .xlsx export."}),
+                409,
+            )
+
+        try:
+            with assembled_uploads(submissions, submission) as (xlsx_files, video_files):
+                _, payload = _stage_match(xlsx_files, video_files, submission.metadata)
+        except Exception as exc:  # noqa: BLE001 - recorded on the submission, not swallowed
+            # Deliberately broad: a truncated or non-SwingVision upload
+            # surfaces as anything from ValueError to BadZipFile, and the
+            # phone's only useful outcome either way is a `failed`
+            # submission carrying the reason, which it can retry. Letting
+            # it 500 would leave the submission stuck in `uploading`
+            # with nothing to show the user.
+            logger.exception("Staging submission %s failed", submission_id)
+            submissions.mark_failed(submission_id, str(exc) or exc.__class__.__name__)
+            return jsonify({"error": str(exc) or exc.__class__.__name__}), 400
+
+        # The files now live in data/uploads/ (archived) and data/media/,
+        # where the existing rules own them, so the staging copies go.
+        submissions.clear_files(submission_id)
+        staged = submissions.mark_staged(submission_id, payload["json_filename"])
+        return jsonify(staged.to_dict() | payload)
+
+    @api.delete("/submissions/<submission_id>")
+    def delete_submission(submission_id: str):
+        if not submissions.delete(submission_id):
+            return jsonify({"error": "Unknown submission."}), 404
+        return jsonify({"deleted": submission_id})
 
     @api.get("/pending")
     def pending_matches():
@@ -406,6 +567,7 @@ def create_api_blueprint(
                 # Read back to the reviewer while they confirm points: it's
                 # the note they wrote about this very import.
                 "reviewer_note": record.reviewer_note,
+                "player_appearance": record.player_appearance,
                 "points": points,
             }
         )

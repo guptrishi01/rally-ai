@@ -177,6 +177,11 @@ class MatchRecord:
         pros: Self-reported "what went well" notes.
         cons: Self-reported "what needs work" notes.
         notes: Free-text notes for the match.
+        player_appearance: How the tracked player looked on the day, in the
+            uploader's own words, e.g. "grey shirt, black shorts". Court ends
+            swap at changeovers, so "near"/"far" is not a stable way to point
+            a footage check at the right person; what they were wearing is.
+            Staged JSON only, never a database column.
         reviewer_note: The reviewer's own account, written at upload time,
             of anything the reconstruction can't see for itself - most
             often why there is more than one export ("part 2 restarts
@@ -189,6 +194,13 @@ class MatchRecord:
         source_file: Path to the SwingVision export this record was built
             from, for traceability during review. None for a match merged
             from multiple exports — see source_files instead.
+        pending_name: Filename this record is staged under, e.g.
+            "2026-11-14_Alex_2.json". Set the first time it is saved and
+            never recomputed, which is what lets two different matches
+            against the same opponent on the same day coexist: the name is
+            allocated once, on collision, and every later save follows it
+            rather than deriving a name that would clobber the other
+            match. Staged-JSON only, never a database column.
         source_archive: Path to the zip the exports were packed into once
             staging succeeded, if pipeline.archive_sources() has run. When
             set, source_file/source_files hold member *names* inside that
@@ -227,10 +239,12 @@ class MatchRecord:
     pros: str | None = None
     cons: str | None = None
     notes: str | None = None
+    player_appearance: str | None = None
     reviewer_note: str | None = None
     source_file: str | None = None
     source_files: list[str] | None = None
     source_archive: str | None = None
+    pending_name: str | None = None
     sets: list[SetRecord] = field(default_factory=list)
     import_notes: list[str] = field(default_factory=list)
     shot_pattern_summary: dict[str, float] | None = None

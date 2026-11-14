@@ -38,6 +38,16 @@ class WebAppConfig:
             before parsing (gitignored - personal match data, not code).
         media_dir: Where uploaded match video is stored, one subdirectory
             per match (gitignored - personal match data, not code).
+        submissions_dir: Where the phone companion's in-flight submissions
+            live - one subdirectory per submission, holding its record and
+            its partially-uploaded files (gitignored - personal match data,
+            not code). Files move out of here into uploads_dir/media_dir on
+            completion, so the existing archiving and pairing rules apply
+            unchanged.
+        pairing_code_ttl_seconds: How long a pairing code shown on the
+            laptop stays redeemable. Short on purpose: it is a one-time
+            secret typed or scanned off the screen, and the long-lived
+            thing it hands back (a device token) is what the phone keeps.
         max_content_length: Flask's upload size cap, in bytes, covering
             the whole multipart body - every export and every clip in one
             request. Match footage is what makes this large: an hour of
@@ -49,4 +59,19 @@ class WebAppConfig:
 
     uploads_dir: Path = _REPO_ROOT / "data" / "uploads"
     media_dir: Path = _REPO_ROOT / "data" / "media"
+    submissions_dir: Path = _REPO_ROOT / "data" / "submissions"
+    pairing_code_ttl_seconds: int = 300
     max_content_length: int = field(default_factory=_max_upload_bytes)
+
+    @property
+    def pairing_path(self) -> Path:
+        """Where paired device tokens and outstanding codes are kept.
+
+        Derived from submissions_dir rather than configured separately, so
+        the one gitignored directory covers every bit of phone-companion
+        state and a test only has to redirect one field.
+
+        Returns:
+            The pairing state file's path.
+        """
+        return self.submissions_dir / "pairing.json"

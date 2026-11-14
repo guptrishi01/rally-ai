@@ -169,6 +169,10 @@ class FootageVerdict:
         usable: Whether the frames actually showed how the point ended.
         server_seen: "tracked", "opponent" or "unclear" - an alignment
             check against the spreadsheet's own record of who served.
+        tracked_seen_at: Which end the tracked player was identified at from
+            their described appearance - "near", "far" or "unclear". A second
+            alignment check, independent of the server one: it disagreeing
+            with the sheet means the frames are of somebody else.
         winner: "tracked", "opponent" or "unclear".
         point_end_type: One of the point table's values, or "unclear".
         tracked_at_net: "yes", "no" or "unclear".
@@ -186,6 +190,7 @@ class FootageVerdict:
     tracked_at_net: str
     confidence: str
     reasoning: str
+    tracked_seen_at: str = "unclear"
     refused: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
@@ -202,6 +207,7 @@ VERDICT_SCHEMA: dict = {
             "enum": sorted(VALID_END_TYPES) + ["unclear"],
         },
         "tracked_at_net": {"type": "string", "enum": ["yes", "no", "unclear"]},
+        "tracked_seen_at": {"type": "string", "enum": ["near", "far", "unclear"]},
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         "reasoning": {"type": "string"},
     },
@@ -371,16 +377,26 @@ def check_alignment(
             continue
         if latest > durations[part] + tolerance:
             problems.append(
-                f"part {part + 1}: the export records a shot at {latest:.0f}s, "
-                f"but the video is only {durations[part]:.0f}s long"
+                f"part {part + 1}: the export records a shot at {latest:.0f}s "
+                f"({latest / 60:.0f} min), but the video is only "
+                f"{durations[part]:.0f}s ({durations[part] / 60:.0f} min) long"
             )
     if problems:
+        # Name the cause, not just the symptom. This is reached by saving the
+        # video from SwingVision with its rallies filter still on, which is
+        # the default way the share sheet behaves - so "upload the full
+        # video" alone reads as a reproach rather than an instruction.
         raise FootageAlignmentError(
             "This footage doesn't line up with the export's timestamps ("
             + "; ".join(problems)
-            + "). SwingVision's condensed rallies-only video is the usual cause: "
-            "its Video Time values refer to the full-length recording. Upload the "
-            "full-length video for each part to check points against footage."
+            + "). The usual cause is SwingVision's rallies-only export - a file "
+            "named like '...-Filtered-Rallies.mp4'. Saving the video while the "
+            "app's rally filter is on exports only the rallies, but Video Time "
+            "still refers to the full-length recording. It is also a biased "
+            "sample, holding roughly the longest 45% of points and none that "
+            "ended on a serve or return, so it cannot check an ace, a double "
+            "fault or a return error. Clear the filter in SwingVision before "
+            "saving, and check the saved video runs the full match length."
         )
 
 
@@ -460,10 +476,20 @@ def frames_for_point(
 # --------------------------------------------------------------------------
 
 
-def _prompt(window: PointWindow, reviewer_note: str | None) -> str:
+def _prompt(
+    window: PointWindow,
+    reviewer_note: str | None,
+    player_appearance: str | None = None,
+) -> str:
     """The instructions that follow the frames.
 
     Deliberately omits what the spreadsheet recorded as the outcome.
+
+    Appearance is given as a way to FIND the tracked player, never as a way
+    to judge the point. It is worth stating separately from the court end
+    because the two disagree in a useful way: ends swap at changeovers, so a
+    described shirt that turns up at the end the sheet did not expect means
+    the frames are of the wrong person or the wrong point.
     """
     side = window.tracked_side or "unknown"
     other = {"near": "far", "far": "near"}.get(side, "unknown")
@@ -483,11 +509,28 @@ def _prompt(window: PointWindow, reviewer_note: str | None) -> str:
         "Context from the shot tracker (not an outcome):",
         f"- The TRACKED player is at the {side.upper()} end of the court; the "
         f"OPPONENT is at the {other.upper()} end.",
+        *(
+            [
+                f"- The TRACKED player is described as: {player_appearance.strip()}. "
+                "Use this to work out which player is which, and say where you "
+                "actually saw them - do not assume the end above is right."
+            ]
+            if player_appearance and player_appearance.strip()
+            else []
+        ),
         f"- {server} serves this point.",
         f"- The tracker recorded {window.shot_count} shot(s) in the point.",
         note,
         "Judge from the frames alone how this point ended. Report:",
         '- server_seen: who you can see serving - "tracked", "opponent", or "unclear".',
+        *(
+            [
+                "- tracked_seen_at: which end you actually saw the player matching "
+                'that description at - "near", "far", or "unclear".'
+            ]
+            if player_appearance and player_appearance.strip()
+            else []
+        ),
         '- winner: who won the point - "tracked", "opponent", or "unclear".',
         "- point_end_type: always from the TRACKED player's side, using exactly "
         "these buckets:",
@@ -523,7 +566,12 @@ def _prompt(window: PointWindow, reviewer_note: str | None) -> str:
     return "\n".join(lines)
 
 
-def _content(frames: list[Frame], window: PointWindow, reviewer_note: str | None) -> list[dict]:
+def _content(
+    frames: list[Frame],
+    window: PointWindow,
+    reviewer_note: str | None,
+    player_appearance: str | None = None,
+) -> list[dict]:
     """Builds the user turn: labelled frames first, then the instructions."""
     blocks: list[dict] = []
     for i, frame in enumerate(frames, start=1):
@@ -540,7 +588,9 @@ def _content(frames: list[Frame], window: PointWindow, reviewer_note: str | None
                 },
             }
         )
-    blocks.append({"type": "text", "text": _prompt(window, reviewer_note)})
+    blocks.append(
+        {"type": "text", "text": _prompt(window, reviewer_note, player_appearance)}
+    )
     return blocks
 
 
@@ -568,6 +618,7 @@ def judge_point(
     frames: list[Frame],
     reviewer_note: str | None = None,
     fallbacks: FallbackSwitch | None = None,
+    player_appearance: str | None = None,
 ) -> FootageVerdict:
     """Asks Claude for a verdict on one point from its frames.
 
@@ -579,6 +630,8 @@ def judge_point(
         frames: The frames to judge from.
         reviewer_note: The uploader's note on this import, if any.
         fallbacks: Shared switch for the refusal-fallback parameter.
+        player_appearance: How the tracked player looked, if the uploader
+            said - used to identify them, never to judge the point.
 
     Returns:
         The verdict. A refusal comes back as an unusable verdict rather
@@ -589,7 +642,7 @@ def judge_point(
             failures, or a response that doesn't match the schema.
     """
     switch = fallbacks or FallbackSwitch(config.use_fallbacks)
-    content = _content(frames, window, reviewer_note)
+    content = _content(frames, window, reviewer_note, player_appearance)
     attempts = max(1, config.max_attempts)
     response = None
     attempt = 0
@@ -655,6 +708,7 @@ def judge_point(
         return FootageVerdict(
             usable=bool(data["footage_usable"]),
             server_seen=data["server_seen"],
+            tracked_seen_at=data.get("tracked_seen_at", "unclear"),
             winner=data["winner"],
             point_end_type=data["point_end_type"],
             tracked_at_net=data["tracked_at_net"],
@@ -672,9 +726,11 @@ def compare(verdict: FootageVerdict, point: PointRecord, window: PointWindow) ->
 
     "agrees" is deliberately hard to reach: the verdict must be usable and
     high-confidence, must have seen the same server the spreadsheet
-    recorded (otherwise the frames may be from another point), must be
-    internally consistent, must not contradict the recorded net approach,
-    and must match the recorded outcome exactly.
+    recorded (otherwise the frames may be from another point), must have
+    found the tracked player at the end the sheet puts them (when their
+    appearance was described), must be internally consistent, must not
+    contradict the recorded net approach, and must match the recorded
+    outcome exactly.
 
     Args:
         verdict: The footage verdict.
@@ -690,6 +746,15 @@ def compare(verdict: FootageVerdict, point: PointRecord, window: PointWindow) ->
         return "inconclusive"
     expected_server = "tracked" if window.tracked_serving else "opponent"
     if verdict.server_seen != expected_server:
+        return "inconclusive"
+    # Identity by appearance, when it was given: ends swap at changeovers,
+    # so the player described turning up at the other end means the frames
+    # are of the wrong person - not something to resolve by judging harder.
+    if (
+        verdict.tracked_seen_at != "unclear"
+        and window.tracked_side
+        and verdict.tracked_seen_at != window.tracked_side
+    ):
         return "inconclusive"
     footage_won = verdict.winner == "tracked"
     if (verdict.point_end_type in WINNING_END_TYPES) != footage_won:

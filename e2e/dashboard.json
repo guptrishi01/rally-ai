@@ -22,13 +22,15 @@
           "header nav button",
           "h1",
           "#load",
-          "input[name='xlsx_files']"
+          "input[name='xlsx_files']",
+          "input[name='player_appearance']"
         ],
         "text_present": [
           "Rally AI",
           "Every match you play, kept honestly.",
           "Load a match",
-          "A reviewed record of how you actually play"
+          "A reviewed record of how you actually play",
+          "pick you out of the frame"
         ],
         "text_absent": [
           "RallyAI",

@@ -11,10 +11,14 @@ Two responsibilities, kept deliberately separate:
   viewable on its own (downloaded, opened without a server running).
   Viewing it never spends API money - it only reads whatever AI coaching
   report is already cached on disk, never constructs a client.
+
+Binds 127.0.0.1 unless `--lan` is passed, which is the phone companion's
+one opt-in loosening of that stance (see webapp/pairing.py).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -36,6 +40,7 @@ from swingvision_import.db import get_connection  # noqa: E402
 from swingvision_import.pipeline import SwingVisionImportPipeline  # noqa: E402
 from webapp.api import create_api_blueprint, register_media_route  # noqa: E402
 from webapp.config import WebAppConfig  # noqa: E402
+from webapp.pairing import PairingStore  # noqa: E402
 
 _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 
@@ -134,7 +139,41 @@ def create_app(
     return app
 
 
+def resolve_host(argv: list[str] | None = None) -> str:
+    """Decides which interface to bind, from the command line.
+
+    The default is unchanged and deliberately unchanged: 127.0.0.1, a
+    local single-user tool. `--lan` is the one opt-in that exposes it to
+    the home network, which the phone companion needs - and which is why
+    every /api/submissions route requires a paired device token.
+
+    Args:
+        argv: Arguments to parse; defaults to the real command line.
+
+    Returns:
+        The host to bind, "127.0.0.1" or "0.0.0.0".
+    """
+    parser = argparse.ArgumentParser(description="Run the Rally AI dashboard.")
+    parser.add_argument(
+        "--lan",
+        action="store_true",
+        help=(
+            "Bind every interface so a phone on the same Wi-Fi can reach it. "
+            "Off by default; /api/submissions always requires a paired token."
+        ),
+    )
+    return "0.0.0.0" if parser.parse_args(argv).lan else "127.0.0.1"  # noqa: S104
+
+
 if __name__ == "__main__":
-    # Binds to 127.0.0.1 by default (Flask's own default) - a local,
-    # single-user tool, never meant to be exposed beyond localhost.
-    create_app().run(debug=True)
+    host = resolve_host()
+    if host != "127.0.0.1":
+        # Printed, not logged: it is a one-time secret for the person
+        # sitting at the laptop, and it belongs on their screen rather
+        # than in a log file that outlives it.
+        store = PairingStore(
+            WebAppConfig().pairing_path,
+            code_ttl_seconds=WebAppConfig().pairing_code_ttl_seconds,
+        )
+        print(f"Pairing code (valid {store.code_ttl_seconds}s): {store.new_code()}")
+    create_app().run(debug=True, host=host)

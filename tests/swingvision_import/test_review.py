@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -226,3 +227,78 @@ def test_confirm_point_raises_when_no_point_matches():
             point_won=True,
             net_approach=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Staged-filename collisions
+# ---------------------------------------------------------------------------
+
+
+def _match(**overrides) -> MatchRecord:
+    base = dict(date="2026-11-14", opponent="Alex", result="W")
+    base.update(overrides)
+    return MatchRecord(**base)
+
+
+def test_two_different_matches_same_day_same_opponent_both_survive(tmp_path):
+    """Used to collapse into one file, silently destroying the first."""
+    first = save_pending(_match(notes="morning match"), tmp_path)
+    second = save_pending(_match(result="L", notes="evening match"), tmp_path)
+
+    assert first.name == "2026-11-14_Alex.json"
+    assert second.name == "2026-11-14_Alex_2.json"
+    assert load_pending(first).notes == "morning match"
+    assert load_pending(second).notes == "evening match"
+
+
+def test_a_third_match_keeps_counting(tmp_path):
+    save_pending(_match(), tmp_path)
+    save_pending(_match(), tmp_path)
+
+    assert save_pending(_match(), tmp_path).name == "2026-11-14_Alex_3.json"
+
+
+def test_updating_a_record_rewrites_its_own_file(tmp_path):
+    """The seven update paths (suggestions, footage verdicts, confirmations,
+    archived sources) must keep overwriting their own file, not spawn one."""
+    record = _match()
+    first = save_pending(record, tmp_path)
+
+    record.notes = "updated in place"
+    again = save_pending(record, tmp_path)
+
+    assert again == first
+    assert list(tmp_path.glob("*.json")) == [first]
+    assert load_pending(first).notes == "updated in place"
+
+
+def test_a_suffixed_record_keeps_its_own_name_when_updated(tmp_path):
+    """The dangerous case: a suffixed record must not derive the unsuffixed
+    name on its next save and overwrite the other match."""
+    first = save_pending(_match(notes="first"), tmp_path)
+    second_record = _match(notes="second")
+    second = save_pending(second_record, tmp_path)
+
+    second_record.notes = "second, edited"
+    save_pending(second_record, tmp_path)
+
+    assert second.name == "2026-11-14_Alex_2.json"
+    assert load_pending(first).notes == "first"
+    assert load_pending(second).notes == "second, edited"
+
+
+def test_a_record_staged_before_this_change_adopts_its_file(tmp_path):
+    """Existing pending files have no pending_name; loading one must claim
+    the file it came from rather than allocating a suffixed copy."""
+    legacy = tmp_path / "2026-11-14_Alex.json"
+    legacy.write_text(
+        json.dumps(MatchRecord(date="2026-11-14", opponent="Alex", result="W").to_dict()),
+        encoding="utf-8",
+    )
+
+    record = load_pending(legacy)
+    record.notes = "edited after upgrade"
+    saved = save_pending(record, tmp_path)
+
+    assert saved == legacy
+    assert list(tmp_path.glob("*.json")) == [legacy]

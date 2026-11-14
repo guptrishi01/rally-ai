@@ -190,6 +190,10 @@ export interface PendingDetail {
   /** What the uploader wrote about this import's own quirks, echoed back
    *  so it's in front of them while they confirm the flagged points. */
   reviewer_note: string | null
+  /** How the tracked player looked, so a footage check can pick them out
+   *  of the frame. Ends swap at changeovers, so "near"/"far" alone is not
+   *  a stable way to say which player is you. */
+  player_appearance: string | null
   points: FlaggedPoint[]
 }
 

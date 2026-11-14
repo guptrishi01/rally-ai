@@ -28,6 +28,9 @@ src/swingvision_import/pending/
 data/uploads/
 data/media/
 
+# Phone companion: in-flight submissions and paired device tokens
+data/submissions/
+
 # Generated AI coaching reports and rendered HTML - personal data, not code
 ai/reports/
 ai/journal_feedback/

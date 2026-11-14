@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from .records import LOSING_END_TYPES, VALID_END_TYPES, WINNING_END_TYPES, MatchRecord
 
@@ -29,11 +29,75 @@ def slugify_filename(value: str) -> str:
     return slug or "unknown"
 
 
+def _source_names(record: MatchRecord) -> set[str]:
+    """The basenames of the exports a record was built from.
+
+    Basenames rather than full paths: the web form stores an upload as
+    "<date>_<opponent>_<original name>.xlsx", which is stable for the same
+    source file across re-uploads, and archiving later rewrites the entry
+    to a bare member name. Comparing basenames survives both.
+
+    Args:
+        record: The staged match record.
+
+    Returns:
+        The set of source basenames; empty if the record has none.
+    """
+    sources = record.source_files or ([record.source_file] if record.source_file else [])
+    return {PurePath(source).name for source in sources if source}
+
+
+def allocate_pending_name(record: MatchRecord, pending_dir: Path) -> str:
+    """Picks a staged filename, reusing one only for the very same match.
+
+    Two competing rules meet here. CLAUDE.md says never reprocess or
+    duplicate by default, so re-ingesting a match must land back on its own
+    file. But two genuinely different matches against the same opponent on
+    the same day used to collapse into one file and silently destroy the
+    first.
+
+    Both hold if the question is "is this the same match?" rather than "is
+    the name taken?" - decided by the exports the record was built from. A
+    re-ingest of the same files overwrites as before; a different match
+    becomes "<date>_<opponent>_2.json".
+
+    An interrupted recording is not this case at all: its parts arrive
+    together and ingest_multi_part merges them into one record.
+
+    Args:
+        record: The match being staged.
+        pending_dir: Where staged matches live.
+
+    Returns:
+        The filename to write to.
+    """
+    stem = f"{record.date}_{slugify_filename(record.opponent)}"
+    names = _source_names(record)
+    suffix = 1
+    while True:
+        candidate = f"{stem}.json" if suffix == 1 else f"{stem}_{suffix}.json"
+        path = pending_dir / candidate
+        if not path.exists():
+            return candidate
+        try:
+            existing = load_pending(path)
+        except (OSError, ValueError):
+            return candidate  # unreadable: take it rather than orphan the name
+        # Same exports means this is the same match being staged again.
+        if names and _source_names(existing) == names:
+            return candidate
+        suffix += 1
+
+
 def save_pending(record: MatchRecord, pending_dir: Path) -> Path:
     """Writes a MatchRecord to the pending-review JSON directory.
 
-    Re-saving a record for the same date/opponent overwrites the existing
-    file rather than creating a duplicate.
+    A record that already knows its filename (record.pending_name) is
+    written back to exactly that file, so the seven update paths - adding
+    suggestions, footage verdicts, confirmations, archived sources - keep
+    overwriting their own file rather than spawning copies. A record with
+    no name yet is a new match, and gets one allocated without clobbering
+    an existing match (see allocate_pending_name).
 
     Args:
         record: The match to stage for review.
@@ -44,8 +108,9 @@ def save_pending(record: MatchRecord, pending_dir: Path) -> Path:
         Path to the written JSON file.
     """
     pending_dir.mkdir(parents=True, exist_ok=True)
-    opponent_slug = slugify_filename(record.opponent)
-    path = pending_dir / f"{record.date}_{opponent_slug}.json"
+    if not record.pending_name:
+        record.pending_name = allocate_pending_name(record, pending_dir)
+    path = pending_dir / record.pending_name
     path.write_text(json.dumps(record.to_dict(), indent=2), encoding="utf-8")
     return path
 
@@ -82,7 +147,13 @@ def load_pending(path: Path) -> MatchRecord:
         The reconstructed MatchRecord.
     """
     data = json.loads(path.read_text(encoding="utf-8"))
-    return MatchRecord.from_dict(data)
+    record = MatchRecord.from_dict(data)
+    # Records staged before pending_name existed carry no name; adopt the
+    # file they actually came from, so saving one back cannot allocate a
+    # fresh suffixed copy of itself.
+    if not record.pending_name:
+        record.pending_name = path.name
+    return record
 
 
 class ConfirmationError(ValueError):

@@ -574,7 +574,7 @@ def test_footage_status_refuses_a_condensed_export(client, monkeypatch):
     status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
 
     assert status["available"] is False
-    assert "condensed" in status["reason"]
+    assert "rallies-only" in status["reason"]
 
 
 def test_footage_status_quotes_a_cost_before_anything_is_spent(client, monkeypatch):

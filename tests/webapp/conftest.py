@@ -56,7 +56,11 @@ def import_config(tmp_path: Path) -> ImportConfig:
 
 @pytest.fixture
 def webapp_config(tmp_path: Path) -> WebAppConfig:
-    return WebAppConfig(uploads_dir=tmp_path / "uploads", media_dir=tmp_path / "media")
+    return WebAppConfig(
+        uploads_dir=tmp_path / "uploads",
+        media_dir=tmp_path / "media",
+        submissions_dir=tmp_path / "submissions",
+    )
 
 
 @pytest.fixture

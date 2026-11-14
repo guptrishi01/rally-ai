@@ -561,7 +561,13 @@ class SwingVisionImportPipeline:
             window = windows[point.source_point_number]
             frames = extract(videos[window.part], window)
             return footage.judge_point(
-                client, config, window, frames, record.reviewer_note, switch
+                client,
+                config,
+                window,
+                frames,
+                record.reviewer_note,
+                switch,
+                player_appearance=record.player_appearance,
             )
 
         # One vision call per point, each independent and stateless - the
