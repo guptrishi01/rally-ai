@@ -1,0 +1,125 @@
+{
+  "base_url": "http://127.0.0.1:5000",
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "name": "phone",
+      "width": 390,
+      "height": 844
+    }
+  ],
+  "steps": [
+    {
+      "name": "overview",
+      "goto": "/",
+      "settle": 1200,
+      "assert": {
+        "selector_present": [
+          "header nav button",
+          "h1",
+          "#load",
+          "input[name='xlsx_files']"
+        ],
+        "text_present": [
+          "Rally AI",
+          "Every match you play, kept honestly.",
+          "Load a match",
+          "A reviewed record of how you actually play"
+        ],
+        "text_absent": [
+          "RallyAI",
+          "undefined",
+          "NaN",
+          "[object Object]",
+          "Invalid Date"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "journal",
+      "goto": "/",
+      "settle": 800,
+      "actions": [
+        {
+          "click": "header nav button:nth-child(2)"
+        },
+        {
+          "wait": 1200
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "h1"
+        ],
+        "text_present": [
+          "What you felt, beside what happened."
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "statistics",
+      "goto": "/",
+      "settle": 800,
+      "actions": [
+        {
+          "click": "header nav button:nth-child(3)"
+        },
+        {
+          "wait": 1800
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "h1"
+        ],
+        "text_present": [
+          "The numbers, and where they came from."
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "film",
+      "goto": "/",
+      "settle": 800,
+      "actions": [
+        {
+          "click": "header nav button:nth-child(4)"
+        },
+        {
+          "wait": 1200
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "h1"
+        ],
+        "text_present": [
+          "The footage behind the flags."
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    }
+  ]
+}

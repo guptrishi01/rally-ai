@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 
 interface SplitTextProps {
@@ -34,36 +35,39 @@ export default function SplitText({
   return (
     <span className={className} aria-label={text}>
       {words.map((word, i) => (
-        <span
-          key={`${word}-${i}`}
-          aria-hidden
-          style={{
-            display: 'inline-block',
-            overflow: 'hidden',
-            verticalAlign: 'bottom',
-            // The clip box is the line box, which at line-height < 1 cuts
-            // descenders (the y in "play,"). Pad it out, then pull the same
-            // amount back off so the headline's leading is unchanged.
-            paddingBottom: '0.18em',
-            marginBottom: '-0.18em',
-            // A trailing space inside an inline-block collapses away, so the
-            // word gap has to be a margin rather than whitespace.
-            marginRight: i < words.length - 1 ? '0.26em' : undefined,
-          }}
-        >
-          <motion.span
-            style={{ display: 'inline-block', willChange: 'transform' }}
-            initial={{ y: '110%', opacity: 0 }}
-            animate={{ y: '0%', opacity: 1 }}
-            transition={{
-              duration: 0.9,
-              delay: delay + i * stagger,
-              ease: [0.16, 1, 0.3, 1],
+        <Fragment key={`${word}-${i}`}>
+          <span
+            aria-hidden
+            style={{
+              display: 'inline-block',
+              overflow: 'hidden',
+              verticalAlign: 'bottom',
+              // The clip box is the line box, which at a line-height under 1
+              // cuts descenders (the y in "play,"). Pad it out, then pull the
+              // same amount back so the headline's leading is unchanged.
+              paddingBottom: '0.18em',
+              marginBottom: '-0.18em',
             }}
           >
-            {word}
-          </motion.span>
-        </span>
+            <motion.span
+              style={{ display: 'inline-block', willChange: 'transform' }}
+              initial={{ y: '110%', opacity: 0 }}
+              animate={{ y: '0%', opacity: 1 }}
+              transition={{
+                duration: 0.9,
+                delay: delay + i * stagger,
+                ease: [0.16, 1, 0.3, 1],
+              }}
+            >
+              {word}
+            </motion.span>
+          </span>
+          {/* A real space between the clip boxes rather than a margin on
+              them: the gap has to survive selecting and copying the
+              headline, and a margin renders a gap while the text itself
+              reads "Everymatchyouplay". */}
+          {i < words.length - 1 ? ' ' : null}
+        </Fragment>
       ))}
     </span>
   )

@@ -52,3 +52,6 @@ htmlcov/
 
 # Personal working notes - never staged
 todo.txt
+
+# Behaviour-check screenshots and reports - regenerated per run
+e2e/output/
