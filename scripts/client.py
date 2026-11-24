@@ -32,3 +32,42 @@ def get_anthropic_client() -> anthropic.Anthropic:
             "a real key, or export it in your shell before running this script."
         )
     return anthropic.Anthropic(api_key=api_key)
+
+
+FOOTAGE_BACKENDS = frozenset({"api", "claude-code"})
+
+
+def get_footage_client(backend: str | None = None):
+    """Builds the client the footage check judges through.
+
+    Two ways to get the same judgement: the Anthropic API, billed per
+    token against ANTHROPIC_API_KEY, or the local Claude Code CLI, drawn
+    from the signed-in subscription (scripts/claude_code_client.py). The
+    pipeline cannot tell them apart.
+
+    Args:
+        backend: "api" or "claude-code". When not given, the
+            RALLY_AI_FOOTAGE_BACKEND environment variable decides, and
+            "claude-code" is the default - the footage check judges
+            through the signed-in subscription unless the API is asked
+            for by name, so no API credit is spent by default.
+
+    Returns:
+        A client with `beta.messages.create`.
+
+    Raises:
+        ValueError: If the backend is not one of FOOTAGE_BACKENDS.
+        RuntimeError: If the API is chosen and ANTHROPIC_API_KEY isn't set.
+    """
+    load_dotenv()
+    requested = backend or os.environ.get("RALLY_AI_FOOTAGE_BACKEND") or "claude-code"
+    chosen = requested.strip().lower()
+    if chosen not in FOOTAGE_BACKENDS:
+        raise ValueError(
+            f"Unknown footage backend {chosen!r}; expected one of {sorted(FOOTAGE_BACKENDS)}."
+        )
+    if chosen == "claude-code":
+        from scripts.claude_code_client import ClaudeCodeClient
+
+        return ClaudeCodeClient()
+    return get_anthropic_client()

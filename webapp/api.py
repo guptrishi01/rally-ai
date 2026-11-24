@@ -21,7 +21,7 @@ from flask import Blueprint, Flask, jsonify, request, send_from_directory
 
 from ai.config import AICoachConfig
 from ai.journal import generate_journal_feedback
-from scripts.client import get_anthropic_client
+from scripts.client import get_anthropic_client, get_footage_client
 from shot_map.embeddings import build_shot_embeddings
 from stats.queries import (
     all_match_ids,
@@ -755,7 +755,10 @@ def create_api_blueprint(
         config = footage.FootageConfig(
             **{k: v for k, v in body.items() if k in _FOOTAGE_OVERRIDES}
         )
-        client = get_anthropic_client()
+        # The signed-in Claude Code subscription by default, so no API
+        # credit is spent; RALLY_AI_FOOTAGE_BACKEND=api opts back into the
+        # per-token API path.
+        client = get_footage_client()
 
         def run():
             return pipeline.verify_footage(
