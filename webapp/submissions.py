@@ -44,6 +44,8 @@ from threading import Lock
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
+from swingvision_import.records import parse_footage_rally_count
+
 logger = logging.getLogger(__name__)
 
 STATE_AWAITING_FILES = "awaiting_files"
@@ -56,7 +58,15 @@ _SUBMISSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _RECORD_NAME = "submission.json"
 
 _REQUIRED_FIELDS = ("date", "opponent", "result")
-_TEXT_FIELDS = ("location", "pros", "cons", "notes", "reviewer_note", "tracked_identity")
+_TEXT_FIELDS = (
+    "location",
+    "pros",
+    "cons",
+    "notes",
+    "reviewer_note",
+    "tracked_identity",
+    "player_appearance",
+)
 _RATING_FIELDS = ("energy_rating", "mental_rating")
 _SET_NUMBERS = (1, 2, 3)
 _SERVERS = ("me", "opponent")
@@ -195,6 +205,13 @@ def validate_metadata(raw: object) -> dict[str, object]:
         if not 1 <= rating <= 5:
             raise SubmissionError(f"{name} must be a whole number from 1 to 5.")
         cleaned[name] = rating
+
+    try:
+        rally_count = parse_footage_rally_count(raw.get("footage_rally_count"))
+    except ValueError as exc:
+        raise SubmissionError(f"footage_rally_count: {exc}") from exc
+    if rally_count is not None:
+        cleaned["footage_rally_count"] = rally_count
 
     for key, value in raw.items():
         if not key.startswith("first_server_set"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from swingvision_import.quality_check import (
+    check_footage_rally_count,
     check_score_against_sets_sheet,
     check_serve_order,
     check_tracked_identity,
@@ -102,3 +103,50 @@ def test_check_tracked_identity_mismatch_produces_a_note():
     assert len(notes) == 1
     assert "Someone Else" in notes[0]
     assert "Rishi Gupta" in notes[0]
+
+
+def _sets_with_points(count: int) -> list[SetRecord]:
+    record = _set_record(1, 6, 4, True)
+    record.points = [record.points[0]] * count
+    return [record]
+
+
+def test_check_footage_rally_count_says_nothing_when_no_count_was_given():
+    assert check_footage_rally_count(_sets_with_points(10), None) == []
+
+
+def test_check_footage_rally_count_ignores_an_unusable_count():
+    """A hand-edited pending JSON can hold anything; a non-positive count
+    is treated as not supplied rather than producing a nonsense ceiling."""
+    assert check_footage_rally_count(_sets_with_points(10), 0) == []
+    assert check_footage_rally_count(_sets_with_points(10), -3) == []
+
+
+def test_check_footage_rally_count_says_nothing_for_a_match_with_no_points():
+    assert check_footage_rally_count([], 12) == []
+
+
+def test_check_footage_rally_count_reports_the_coverage_ceiling():
+    """Fewer rallies than points is the expected shape of a rallies-only
+    export, so it is reported as a ceiling, not as a fault."""
+    (note,) = check_footage_rally_count(_sets_with_points(10), 7)
+
+    assert "at most 7 of 10 points (70%)" in note
+    assert "At least 3 point(s) in this import have no rally" in note
+    # The cause is not established, so the note must not name one.
+    assert "has not been established" in note
+
+
+def test_check_footage_rally_count_flags_more_rallies_than_points():
+    """Every rally is a point, so this cannot be the export format - the
+    import is short, or the count includes non-match rallies."""
+    (note,) = check_footage_rally_count(_sets_with_points(10), 14)
+
+    assert "14 rallies" in note and "only 10 points" in note
+    assert "at least 4 point(s) are missing" in note
+
+
+def test_check_footage_rally_count_reports_an_exact_match():
+    (note,) = check_footage_rally_count(_sets_with_points(10), 10)
+
+    assert "every point has a rally" in note

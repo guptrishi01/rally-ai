@@ -1,0 +1,33 @@
+import sys, dataclasses, logging
+sys.path.insert(0,'src'); sys.path.insert(0,'.')
+logging.disable(logging.CRITICAL)
+from pathlib import Path
+from collections import Counter
+from swingvision_import.config import ImportConfig
+from swingvision_import.parse import SwingVisionParser
+from swingvision_import import reconstruct
+raw = SwingVisionParser(ImportConfig()).parse(Path("SwingVision-match-2026-08-21 at 13.14.26.xlsx"))
+host = raw.settings.host_name
+def score(shots):
+    r = reconstruct.reconstruct_all(shots, host)
+    return [(s.games_won, s.games_lost, len(s.points)) for s in r.sets], sum(len(s.points) for s in r.sets)
+print("Sets sheet (SwingVision's own):", [(r.games_won, r.games_lost) for r in raw.sets])
+print("today:                        ", *score(raw.shots))
+by = reconstruct.group_shots_by_point(raw.shots); keys = sorted(by)
+def merged(require_fault):
+    remap = {}
+    for i,k in enumerate(keys):
+        v = by[k]
+        if v[0].shot_type != "second_serve" or i == 0: continue
+        p = by[keys[i-1]]
+        if len(p)==1 and p[0].shot_type=="first_serve" and p[0].player==v[0].player and (p[0].result!="In" or not require_fault):
+            remap[keys[i-1]] = k
+    out = []
+    for s in raw.shots:
+        out.append(dataclasses.replace(s, point_number=remap[s.point_number]) if s.point_number in remap else s)
+    # renumber shots within merged points so the fault comes first
+    return out, len(remap)
+for rf in (True, False):
+    shots, n = merged(rf)
+    try: print(f"merged {n} fault+second-serve pairs (faults only={rf}):", *score(shots))
+    except Exception as e: print("merge failed:", type(e).__name__, e)

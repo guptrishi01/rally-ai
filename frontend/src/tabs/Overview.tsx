@@ -79,14 +79,18 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
   async function resumeReview(jsonFilename: string) {
     setFormError(null)
     try {
-      setPendingDetail(await api.pendingDetail(jsonFilename))
+      const detail = await api.pendingDetail(jsonFilename)
+      setPendingDetail(detail)
+      // A resumed review has no upload response to read from, so what the
+      // staged file itself records stands in for it. The match number is
+      // the one thing it cannot know (0 = unknown, and not displayed).
       setImportResult({
         json_filename: jsonFilename,
         staged_label: 0,
-        date: '',
-        opponent: '',
+        date: detail.date,
+        opponent: detail.opponent,
         flags: [],
-        import_notes: [],
+        import_notes: detail.import_notes,
         parts: [],
         upload_notes: [],
       })
@@ -469,6 +473,30 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
               <label className="block">
                 <div className="flex items-baseline justify-between">
                   <span className="field-label">
+                    Total rallies in the match (from the footage)
+                  </span>
+                  <span className="eyebrow num">optional</span>
+                </div>
+                <input
+                  name="footage_rally_count"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  className="field num"
+                  placeholder="e.g. 123"
+                />
+                <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
+                  SwingVision&rsquo;s &ldquo;all rallies&rdquo; export shows this number. A
+                  rallies-only video holds fewer rallies than the export has points, so
+                  this is the most a footage check can ever reach &mdash; it is shown beside
+                  every &ldquo;of N points played&rdquo; figure.
+                </p>
+              </label>
+
+              <label className="block">
+                <div className="flex items-baseline justify-between">
+                  <span className="field-label">
                     Notes for the review &mdash; anything odd about this import
                   </span>
                   <span className="eyebrow num">
@@ -523,8 +551,14 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   className="panel-sunk p-5 text-[14px]"
                 >
                   <p>
-                    Staged as <span className="num">{importResult.staged_label}</span> — every
-                    flagged point is confirmed. Ready to load.
+                    {importResult.staged_label > 0 ? (
+                      <>
+                        Staged as <span className="num">{importResult.staged_label}</span>
+                      </>
+                    ) : (
+                      'Staged'
+                    )}{' '}
+                    — every flagged point is confirmed. Ready to load.
                   </p>
                   {importResult.parts.length > 1 && (
                     <p className="mt-2 text-[13px] text-[var(--color-dim)]">

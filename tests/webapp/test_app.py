@@ -4,6 +4,8 @@ import io
 import json
 import zipfile
 
+import pytest
+
 from swingvision_import import footage
 from swingvision_import.review import load_pending, unresolved_flags
 from tests.ai.conftest import FakeMessage, FakeTextBlock
@@ -642,3 +644,67 @@ def test_starting_a_check_without_footage_is_refused(client):
 
 def test_a_missing_pending_file_404s(client):
     assert client.get("/api/pending/nope.json/footage").status_code == 404
+
+
+def test_import_carries_the_rally_count_to_every_footage_surface(client, monkeypatch):
+    upload = _upload(
+        client,
+        _timed_xlsx_bytes(),
+        video_files=(io.BytesIO(b"fake"), "clip.mp4"),
+        footage_rally_count="2",
+    )
+    assert upload.status_code == 200
+    body = upload.get_json()
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    detail = client.get(f"/api/pending/{body['json_filename']}").get_json()
+    status = client.get(f"/api/pending/{body['json_filename']}/footage").get_json()
+
+    assert detail["footage_rally_count"] == 2
+    assert status["footage_rally_count"] == 2
+    assert any("rallies" in note for note in body["import_notes"])
+
+
+def test_footage_status_reports_no_rally_count_when_none_was_given(client, monkeypatch):
+    upload = _upload(
+        client, _timed_xlsx_bytes(), video_files=(io.BytesIO(b"fake"), "clip.mp4")
+    ).get_json()
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
+
+    assert status["footage_rally_count"] is None
+
+
+def test_import_rejects_a_bad_rally_count_before_writing_anything(
+    client, xlsx_bytes, import_config, webapp_config
+):
+    """A bad number is a form error. Rejecting it only after the uploads
+    were saved would strand files for a match that was never staged."""
+    response = _upload(
+        client,
+        xlsx_bytes,
+        video_files=(io.BytesIO(b"fake"), "clip.mp4"),
+        footage_rally_count="lots",
+    )
+
+    assert response.status_code == 400
+    assert "whole number of at least 1" in response.get_json()["error"]
+    assert not list(import_config.pending_dir.glob("*.json"))
+    for directory in (webapp_config.uploads_dir, webapp_config.media_dir):
+        assert not [p for p in directory.rglob("*") if p.is_file()]
+
+
+@pytest.mark.parametrize("bad", ["9", "0", "high"])
+def test_import_rejects_an_out_of_range_rating_as_a_form_error(
+    client, xlsx_bytes, import_config, bad
+):
+    """The schema's own CHECK allows 1-5. Letting a 9 through would stage
+    a match that reviews fine and then cannot be finalized."""
+    response = _upload(client, xlsx_bytes, energy_rating=bad)
+
+    assert response.status_code == 400
+    assert "energy_rating must be a whole number from 1 to 5" in response.get_json()["error"]
+    assert not list(import_config.pending_dir.glob("*.json"))

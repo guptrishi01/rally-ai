@@ -34,6 +34,7 @@ from swingvision_import import footage
 from swingvision_import.config import ImportConfig
 from swingvision_import.db import get_connection
 from swingvision_import.pipeline import SwingVisionImportPipeline
+from swingvision_import.records import parse_footage_rally_count
 from swingvision_import.review import ConfirmationError, load_pending, unresolved_flags
 
 from .config import WebAppConfig
@@ -103,12 +104,28 @@ def _parse_match_overrides(form) -> dict[str, object]:
     Returns:
         Only the fields the user actually filled in - ingest() defaults
         handle the rest.
+
+    Raises:
+        ValueError: If the rally count or a rating is not a usable number.
     """
     overrides: dict[str, object] = {}
+    rally_count = parse_footage_rally_count(form.get("footage_rally_count"))
+    if rally_count is not None:
+        overrides["footage_rally_count"] = rally_count
     for field in _OVERRIDE_RATING_FIELDS:
         value = form.get(field)
-        if value:
-            overrides[field] = int(value)
+        if value in (None, ""):
+            continue
+        # Range-checked here because data/schema.sql's own CHECK would
+        # otherwise reject it at finalize() - after every point had been
+        # reviewed - as an IntegrityError rather than a form error.
+        try:
+            rating = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be a whole number from 1 to 5.") from exc
+        if isinstance(value, bool) or not 1 <= rating <= 5:
+            raise ValueError(f"{field} must be a whole number from 1 to 5.")
+        overrides[field] = rating
     for field in _OVERRIDE_TEXT_FIELDS:
         value = form.get(field)
         if value:
@@ -296,6 +313,10 @@ def create_api_blueprint(
         date = fields["date"]
         opponent = fields["opponent"]
         result = fields["result"]
+        # Parsed before anything is written: a bad number is a form error,
+        # and rejecting it after the uploads were saved would leave files
+        # on disk belonging to a match that was never staged.
+        overrides = _parse_match_overrides(fields)
 
         pairing = pair_uploads(xlsx_files, video_files)
         xlsx_paths = [
@@ -314,7 +335,7 @@ def create_api_blueprint(
             result=result,
             first_server_by_set=_parse_first_server_by_set(fields),
             tracked_identity=fields.get("tracked_identity") or None,
-            **_parse_match_overrides(fields),
+            **overrides,
         )
         # Two or more exports are one interrupted recording, not two
         # matches: merged into a single continuous reconstruction so a
@@ -573,6 +594,7 @@ def create_api_blueprint(
                 # the note they wrote about this very import.
                 "reviewer_note": record.reviewer_note,
                 "player_appearance": record.player_appearance,
+                "footage_rally_count": record.footage_rally_count,
                 "points": points,
             }
         )
@@ -665,6 +687,9 @@ def create_api_blueprint(
             "eligible_points": eligible,
             "already_checked": already,
             "points_played": points_played,
+            # The uploader's own count of rallies in the footage, when they
+            # gave one: the ceiling on what any check can reach.
+            "footage_rally_count": record.footage_rally_count,
             "not_in_footage": not_in_footage,
             "estimate_usd": None,
             "model": footage.FootageConfig().model,

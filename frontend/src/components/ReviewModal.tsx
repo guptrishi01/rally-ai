@@ -197,6 +197,26 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
             </div>
           )}
 
+          {/* What the import already knows is off about this match. Shown
+              here, not only once review is finished: "host/guest may be
+              reversed for this set" is worth knowing before confirming a
+              hundred points, not after. Informational - never a gate. */}
+          {detail.import_notes.length > 0 && (
+            <details className="panel-sunk mt-5 p-4" data-testid="import-notes">
+              <summary className="eyebrow cursor-pointer">
+                What the import noticed ({detail.import_notes.length})
+              </summary>
+              {detail.import_notes.map((note) => (
+                <p
+                  key={note}
+                  className="mt-3 break-words text-[13px] leading-relaxed text-[var(--color-dim)]"
+                >
+                  {note}
+                </p>
+              ))}
+            </details>
+          )}
+
           <AnimatePresence mode="wait">
             {current && choice ? (
               <motion.div

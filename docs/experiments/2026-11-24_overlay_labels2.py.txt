@@ -1,0 +1,50 @@
+"""Cluster each text line of the overlay label separately (spin line, stroke line)."""
+import pickle, sys
+import numpy as np
+from PIL import Image
+d = pickle.load(open(sys.argv[1], "rb")); H, W = d["shape"]; fps = d["fps"]
+LY0, LY1 = 350, 460
+def unpack(b): return np.unpackbits(b)[: H * W].reshape(H, W).astype(bool)
+def lines(mask):
+    rows = mask.sum(1) > 0
+    ys = np.nonzero(rows)[0]
+    if len(ys) < 20 or mask.sum() < 150: return None
+    # split at the largest run of empty rows inside the text block
+    inner = np.nonzero(~rows[ys[0]:ys[-1] + 1])[0]
+    if len(inner) == 0: return None
+    mid = ys[0] + int(np.median(inner))
+    out = []
+    for part in (mask[:mid], mask[mid:]):
+        yy, xx = np.nonzero(part)
+        if len(yy) < 40: return None
+        sub = part[yy.min(): yy.max() + 1, xx.min(): xx.max() + 1]
+        if not (12 <= sub.shape[0] <= 30): return None
+        im = np.asarray(Image.fromarray((sub * 255).astype(np.uint8)).resize((64, 16), Image.BILINEAR)) > 110
+        out.append((im, sub.shape[1], sub))
+    return out
+cl = [[], []]
+seq = []
+for idx, o, g, c in d["events"]:
+    o, g = unpack(o)[LY0:LY1], unpack(g)[LY0:LY1]
+    col = "orange" if o.sum() >= g.sum() else "green"
+    ls = lines(o if col == "orange" else g)
+    if ls is None:
+        seq.append((idx / fps, None, None, None)); continue
+    ids = []
+    for li, (im, w, sub) in enumerate(ls):
+        best = None
+        for k, c_ in enumerate(cl[li]):
+            if abs(c_[1] - w) <= 3 and np.count_nonzero(c_[0] != im) < 150:
+                best = k; break
+        if best is None:
+            cl[li].append([im, w, sub, 0]); best = len(cl[li]) - 1
+        cl[li][best][3] += 1
+        ids.append(best)
+    seq.append((idx / fps, ids[0], ids[1], col))
+for li in (0, 1):
+    print("line", li, [(k, c[1], c[3]) for k, c in enumerate(cl[li])])
+    sheet = Image.new("L", (160, 34 * len(cl[li])), 0)
+    for k, c in enumerate(cl[li]):
+        sheet.paste(Image.fromarray((c[2] * 255).astype(np.uint8)), (4, 34 * k + 2))
+    sheet.save(f"{sys.argv[2]}_{li}.png")
+pickle.dump(seq, open(sys.argv[3], "wb"))

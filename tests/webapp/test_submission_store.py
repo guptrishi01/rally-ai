@@ -150,6 +150,9 @@ def test_validate_metadata_normalises_the_result():
         {"mental_rating": 9},
         {"first_server_set1": "nobody"},
         {"first_server_set4": "me"},
+        {"footage_rally_count": 0},
+        {"footage_rally_count": "lots"},
+        {"footage_rally_count": 12.5},
     ],
 )
 def test_validate_metadata_rejects_bad_values(bad):
@@ -281,3 +284,15 @@ def test_the_default_host_is_still_localhost_only():
 
 def test_lan_opts_into_binding_every_interface():
     assert resolve_host(["--lan"]) == "0.0.0.0"
+
+
+def test_validate_metadata_keeps_the_footage_fields():
+    """The phone is where the footage comes from, so the two fields that
+    describe it must survive the trip - player_appearance used to be
+    dropped here as an unrecognised key."""
+    cleaned = validate_metadata(
+        {**_METADATA, "player_appearance": "grey shirt", "footage_rally_count": "123"}
+    )
+
+    assert cleaned["player_appearance"] == "grey shirt"
+    assert cleaned["footage_rally_count"] == 123

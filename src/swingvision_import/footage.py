@@ -58,8 +58,12 @@ _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 # Per-token list prices (USD per million), for the pre-run estimate only.
 _PRICES = {
+    "claude-fable-5-2": (8.00, 40.00),
+    "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
     "claude-sonnet-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.00, 5.00),
 }
 
@@ -1207,6 +1211,11 @@ class FootageRunSummary:
         points_played: Total points with shots in this match - the
             denominator for every coverage figure below. Set once per run
             from the record, not accumulated as the run proceeds.
+        footage_rally_count: Rallies the footage itself contains, as the
+            uploader counted them (MatchRecord.footage_rally_count), or
+            None if they did not say. The ceiling on `checked`: shown
+            beside `points_played` so the gap between "played" and "in
+            the footage at all" is stated rather than discovered.
         checked: Points a verdict was obtained for.
         agreed: Auto-confirmed - footage and reconstruction matched.
         disagreed: Footage contradicted the record; left for review.
@@ -1224,6 +1233,7 @@ class FootageRunSummary:
     """
 
     points_played: int = 0
+    footage_rally_count: int | None = None
     checked: int = 0
     agreed: int = 0
     disagreed: int = 0

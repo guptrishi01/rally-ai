@@ -33,6 +33,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 from logging_config import configure_logging  # noqa: E402
 from scripts.client import get_anthropic_client  # noqa: E402
 from swingvision_import.pipeline import SwingVisionImportPipeline  # noqa: E402
+from swingvision_import.records import parse_footage_rally_count  # noqa: E402
 from swingvision_import.review import load_pending, unresolved_flags  # noqa: E402
 
 
@@ -62,6 +63,27 @@ def _parse_first_server(values: list[str] | None) -> dict[int, str] | None:
     return result
 
 
+def _rally_count(value: str) -> int:
+    """argparse type for --footage-rally-count.
+
+    Args:
+        value: The raw argument.
+
+    Returns:
+        The count as a positive int.
+
+    Raises:
+        argparse.ArgumentTypeError: If it is not a whole number of at least 1.
+    """
+    try:
+        count = parse_footage_rally_count(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if count is None:
+        raise argparse.ArgumentTypeError("The rally count must be a whole number of at least 1.")
+    return count
+
+
 def main() -> None:
     """Parses CLI args, runs ingest (and optionally suggest), and reports flags."""
     parser = argparse.ArgumentParser(
@@ -88,6 +110,18 @@ def main() -> None:
         help="Your name as tracked by SwingVision, cross-checked against the Settings sheet.",
     )
     parser.add_argument(
+        "--player-appearance",
+        help='What you were wearing, e.g. "grey shirt, black shorts" - how a footage '
+        "check tells you apart from your opponent.",
+    )
+    parser.add_argument(
+        "--footage-rally-count",
+        type=_rally_count,
+        metavar="N",
+        help="Total rallies in the match, from the footage (SwingVision's "
+        '"all rallies" export states it). Sets the ceiling a footage check can reach.',
+    )
+    parser.add_argument(
         "--suggest",
         action="store_true",
         help="Also run Claude-assisted review suggestions (spends real API money).",
@@ -104,6 +138,9 @@ def main() -> None:
         "first_server_by_set": _parse_first_server(args.first_server),
         "tracked_identity": args.tracked_identity,
     }
+    for name in ("player_appearance", "footage_rally_count"):
+        if getattr(args, name) is not None:
+            ingest_kwargs[name] = getattr(args, name)
     if len(args.xlsx_paths) == 1:
         json_path = pipeline.ingest(args.xlsx_paths[0], **ingest_kwargs)
     else:

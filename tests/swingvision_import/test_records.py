@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from swingvision_import.records import MatchRecord, PointRecord, SetRecord
+import pytest
+
+from swingvision_import.records import (
+    MatchRecord,
+    PointRecord,
+    SetRecord,
+    parse_footage_rally_count,
+)
 
 
 def _multi_set_record() -> MatchRecord:
@@ -85,3 +92,28 @@ def test_records_differing_only_in_a_nested_point_are_not_equal():
     b.sets[1].points[0].needs_review = True
 
     assert a != b
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_parse_footage_rally_count_treats_blank_as_not_supplied(blank):
+    assert parse_footage_rally_count(blank) is None
+
+
+@pytest.mark.parametrize("value, expected", [("123", 123), (" 7 ", 7), (123, 123)])
+def test_parse_footage_rally_count_accepts_whole_numbers(value, expected):
+    assert parse_footage_rally_count(value) == expected
+
+
+@pytest.mark.parametrize("bad", ["0", "-4", "12.5", "lots", 0, -1, True, 12.5, [3]])
+def test_parse_footage_rally_count_rejects_anything_else(bad):
+    with pytest.raises(ValueError, match="whole number of at least 1"):
+        parse_footage_rally_count(bad)
+
+
+def test_a_pending_json_written_before_the_rally_count_existed_still_loads():
+    """Staged matches outlive the code that wrote them: a file with no
+    footage_rally_count key must load, with the count simply unknown."""
+    data = _multi_set_record().to_dict()
+    del data["footage_rally_count"]
+
+    assert MatchRecord.from_dict(data).footage_rally_count is None

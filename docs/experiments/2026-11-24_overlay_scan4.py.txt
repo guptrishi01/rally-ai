@@ -1,0 +1,40 @@
+"""Stream the overlay corner of the heatmap export and record what it shows.
+
+Per frame (10 fps): a colour-class map (0 none, 1 orange, 2 green, 3 cyan) of
+the overlay region. Stored only when it changes, with the timestamp.
+"""
+import pickle
+import subprocess
+import sys
+
+import numpy as np
+
+ff, video, out = sys.argv[1:4]
+X, Y, W, H, FPS = 785, 10, 290, 460, 10
+cmd = [ff, "-hide_banner", "-loglevel", "error", "-i", video, "-vf",
+       f"fps={FPS},crop={W}:{H}:{X}:{Y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+n = W * H * 3
+events = []  # (frame_index, packed class map)
+prev = None
+i = 0
+while True:
+    buf = p.stdout.read(n)
+    if len(buf) < n:
+        break
+    a = np.frombuffer(buf, np.uint8).reshape(H, W, 3).astype(np.int16)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mx = a.max(-1)
+    sat = (mx > 150) & ((mx - a.min(-1)) > 80)
+    cls = np.zeros((H, W), np.uint8)
+    cls[sat & (r > g + 40) & (r > b + 60)] = 1            # orange
+    cls[sat & (g > r + 40) & (g > b + 40)] = 2            # green
+    cls[sat & (g > r + 40) & (b > r + 40) & (abs(g - b) <= 40)] = 3  # cyan
+    cls[sat & (b > r + 60) & (b > g + 40)] = 4            # blue
+    if prev is None or np.count_nonzero(cls != prev) > 12:
+        events.append((i, np.packbits(cls == 1), np.packbits(cls == 2), np.packbits(cls == 3), np.packbits(cls == 4)))
+        prev = cls
+    i += 1
+pickle.dump({"fps": FPS, "frames": i, "shape": (H, W), "origin": (X, Y), "events": events},
+            open(out, "wb"))
+print("frames", i, "events", len(events))

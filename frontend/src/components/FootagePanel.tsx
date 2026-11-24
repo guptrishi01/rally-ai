@@ -74,6 +74,14 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
   const progress = job?.progress
   const summary = job?.summary
   const total = status.eligible_points - status.already_checked
+  // The uploader's rally count caps what any check can reach, so it sits
+  // with the denominator wherever the denominator is shown.
+  const coverage = (played: number, rallies: number | null) => (
+    <p className="num text-[12px] text-[var(--color-dim)]" data-testid="footage-coverage">
+      Of {played} points played
+      {rallies != null && <> &middot; {rallies} rallies in the footage (your count)</>}
+    </p>
+  )
 
   return (
     <div className="panel-sunk mt-5 p-5">
@@ -85,6 +93,10 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
           </span>
         )}
       </div>
+
+      {!summary && status.points_played > 0 && (
+        <div className="mt-3">{coverage(status.points_played, status.footage_rally_count)}</div>
+      )}
 
       {/* Why it can't run, when it can't. */}
       {!status.available && !job && (
@@ -139,9 +151,9 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
           {/* The denominator always goes first. "Confirmed" alone invites
               reading it as coverage; "confirmed, of N points played" makes
               the missing ones visible instead of invisible. */}
-          <p className="num mb-2 text-[12px] text-[var(--color-dim)]">
-            Of {summary.points_played} points played
-          </p>
+          <div className="mb-2">
+            {coverage(summary.points_played, summary.footage_rally_count)}
+          </div>
           <p className="text-[14px]">
             <span className="num" style={{ color: 'var(--color-win)' }}>
               {summary.agreed}
@@ -168,9 +180,9 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
           </p>
           {summary.not_in_footage > 0 && (
             <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
-              SwingVision&rsquo;s rallies-only export does not contain points that
-              ended on a serve or return. Those stay flagged for you to settle - we
-              can&rsquo;t verify what isn&rsquo;t in the file.
+              SwingVision&rsquo;s rallies-only export does not contain every point
+              in the sheet. Those stay flagged for you to settle - we can&rsquo;t
+              verify what isn&rsquo;t in the file.
             </p>
           )}
           {summary.notes.map((note) => (

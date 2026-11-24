@@ -295,6 +295,9 @@ class SwingVisionImportPipeline:
         notes.extend(quality_check.check_score_against_sets_sheet(record.sets, raw_sets))
         notes.extend(quality_check.check_serve_order(record.sets, first_server_by_set))
         notes.extend(quality_check.check_tracked_identity(settings, tracked_identity))
+        notes.extend(
+            quality_check.check_footage_rally_count(record.sets, record.footage_rally_count)
+        )
         return notes
 
     def shots_by_point(self, record: MatchRecord) -> dict[int, list[RawShotRow]] | None:
@@ -564,7 +567,10 @@ class SwingVisionImportPipeline:
             for point in set_record.points
             if point.source_point_number is not None
         )
-        summary = footage.FootageRunSummary(points_played=points_played)
+        summary = footage.FootageRunSummary(
+            points_played=points_played,
+            footage_rally_count=record.footage_rally_count,
+        )
         if not targets:
             return summary
 

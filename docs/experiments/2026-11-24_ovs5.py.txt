@@ -1,0 +1,100 @@
+"""Overlay shot sequence per clip vs the sheet's shots per point."""
+import json, pickle, sys, logging, random
+from collections import Counter
+import numpy as np
+S = sys.argv[1]
+sys.path.insert(0, "src"); sys.path.insert(0, ".")
+logging.disable(logging.CRITICAL)
+from pathlib import Path
+from swingvision_import.config import ImportConfig
+from swingvision_import.parse import SwingVisionParser
+from swingvision_import import reconstruct
+b = json.load(open(f"{S}/clips2.json")); clips = [(b[i], b[i+1]) for i in range(len(b)-1)]
+def clip_of(x):
+    for k,(a,c) in enumerate(clips):
+        if a <= x < c: return k
+    return len(clips)-1
+d = pickle.load(open(f"{S}/overlay4.pkl","rb")); H, W = d["shape"]
+seq = pickle.load(open(f"{S}/labelseq4.pkl","rb"))
+def cnt(bits): return int(np.unpackbits(bits)[:345*W].sum())
+# pass 1: state per event = (label or None, pulse?)
+ev = []
+prev_counts = (0,0,0,0); last = None
+for (idx,o,g,c,bl),(t,lab,col) in zip(d["events"], seq):
+    counts = (cnt(o), cnt(g), cnt(c), cnt(bl))
+    pulse = any(counts[i] - prev_counts[i] >= 40 for i in range(3))
+    prev_counts = counts
+    ev.append((t, lab, pulse, col))
+END = b[-1]
+runs = []  # [label, t0, t1, pulses, clip]
+cur = None
+for n,(t,lab,pulse,col) in enumerate(ev):
+    t1 = ev[n+1][0] if n+1 < len(ev) else END
+    k = clip_of(t)
+    if lab == "keep": lab = cur[0] if cur and cur[4]==k else None
+    if lab is None:
+        if cur: runs.append(cur); cur = None
+        continue
+    if cur and cur[0]==lab and cur[4]==k:
+        cur[2] = t1; cur[3] += pulse
+    else:
+        if cur: runs.append(cur)
+        cur = [lab, t, t1, int(pulse), k, col]
+if cur: runs.append(cur)
+# a first-frame label+dots at a clip start is the previous clip's residue: drop runs < 0.25s
+runs = [r for r in runs if r[2]-r[1] >= 0.25]
+per = [[] for _ in clips]
+for r in runs:
+    for _ in range(max(1, r[3])): per[r[4]].append(r[0])
+print("overlay shots:", sum(map(len,per)), "in", len(clips), "clips; clips with no label:", sum(1 for p in per if not p))
+raw = SwingVisionParser(ImportConfig()).parse(Path("SwingVision-match-2026-08-21 at 13.14.26.xlsx"))
+by = reconstruct.group_shots_by_point(raw.shots); keys = sorted(by)
+def tok(s):
+    if "Volley" in s.stroke: return (s.stroke.split()[0], "Volley")
+    return (s.spin, s.stroke)
+pts = [[tok(s) for s in by[k]] for k in keys]
+def ed(a, bq):
+    D = list(range(len(bq)+1))
+    for i in range(1,len(a)+1):
+        p = D[:]; D[0] = i
+        for j in range(1,len(bq)+1):
+            D[j] = min(p[j]+1, D[j-1]+1, p[j-1]+(a[i-1]!=bq[j-1]))
+    return D[-1]
+def align(per, pts, skip_clip=4.0):
+    n,m = len(per),len(pts); INF=1e18
+    D=[[INF]*(m+1) for _ in range(n+1)]; B=[[None]*(m+1) for _ in range(n+1)]
+    for j in range(m+1): D[0][j]=0; B[0][j]='s'
+    for i in range(1,n+1):
+        D[i][0]=D[i-1][0]+skip_clip; B[i][0]='c'
+        for j in range(1,m+1):
+            best,bb = D[i][j-1],'s'
+            c = D[i-1][j-1]+ed(per[i-1],pts[j-1])
+            if c<best: best,bb=c,'m'
+            c = D[i-1][j]+skip_clip
+            if c<best: best,bb=c,'c'
+            D[i][j]=best; B[i][j]=bb
+    i,j=n,m; pairs=[]
+    while i>0:
+        x=B[i][j]
+        if x=='m': pairs.append((i-1,j-1)); i-=1; j-=1
+        elif x=='s': j-=1
+        else: i-=1
+    return pairs[::-1]
+def report(per, tag):
+    pairs = align(per, pts)
+    tot = sum(len(pts[j]) for i,j in pairs); err = sum(ed(per[i],pts[j]) for i,j in pairs)
+    exact = sum(per[i]==pts[j] for i,j in pairs); samelen = sum(len(per[i])==len(pts[j]) for i,j in pairs)
+    print(f"{tag}: matched {len(pairs)}/{len(per)} clips; exact sequence {exact}; same shot count {samelen}; "
+          f"shot-level edits {err} over {tot} sheet shots ({100*(1-err/tot):.1f}% agree)")
+    return pairs
+pairs = report(per, "real order")
+random.seed(1)
+for _ in range(2):
+    sh = per[:]; random.shuffle(sh); report(sh, "shuffled  ")
+pickle.dump((runs,keys,pairs),open(f"{S}/runs4.pkl","wb"))
+json.dump([{"clip":i,"start":clips[i][0],"end":clips[i][1],"point":keys[j],"overlay":per[i],"sheet":pts[j]} for i,j in pairs],
+          open(f"{S}/overlay_alignment.json","w"))
+matched = {j for _,j in pairs}
+print("sheet points not in footage by shot count:", sorted(Counter(len(pts[j]) for j in range(len(pts)) if j not in matched).items()))
+bad = [(i,keys[j],ed(per[i],pts[j]),len(per[i]),len(pts[j])) for i,j in pairs if per[i]!=pts[j]]
+print("non-exact (clip, point, edits, overlay n, sheet n):", bad[:60])

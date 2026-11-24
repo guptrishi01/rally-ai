@@ -675,3 +675,14 @@ def test_the_retrieval_prompt_never_sees_the_point_outcome():
         "spin",
         "speed_mph",
     }
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [("claude-opus-5-5", 6.0), ("claude-fable-5-2", 12.0), ("claude-opus-5", 7.5)],
+)
+def test_actual_cost_prices_each_model_at_its_own_rate(model, expected):
+    """The model is overridable per run, so a model missing from the table
+    was silently billed at Opus 5's rate - a reported cost that was wrong
+    while looking exact."""
+    assert footage.actual_cost(1_000_000, 100_000, model) == expected

@@ -157,6 +157,36 @@ class SetRecord:
     points: list[PointRecord] = field(default_factory=list)
 
 
+def parse_footage_rally_count(value: object) -> int | None:
+    """Validates an uploader-supplied rally count from any front door.
+
+    One rule for the browser form (a string), the phone companion (a JSON
+    number or string) and the CLI, so the three cannot drift apart on what
+    counts as a usable answer.
+
+    Args:
+        value: The raw answer. None and blank strings mean "not supplied".
+
+    Returns:
+        The count as a positive int, or None if nothing was supplied.
+
+    Raises:
+        ValueError: If the value is not a whole number of at least 1.
+    """
+    message = "The rally count must be a whole number of at least 1."
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(message)
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise ValueError(message) from exc
+    if count < 1:
+        raise ValueError(message)
+    return count
+
+
 @dataclass
 class MatchRecord:
     """The staged, JSON-serializable representation of one full match.
@@ -182,6 +212,16 @@ class MatchRecord:
             swap at changeovers, so "near"/"far" is not a stable way to point
             a footage check at the right person; what they were wearing is.
             Staged JSON only, never a database column.
+        footage_rally_count: How many rallies the footage itself contains,
+            counted by the uploader (SwingVision's "all rallies" export
+            states it). It is the ceiling on what a footage check can ever
+            reach: a rallies-only export leaves out every point decided on
+            the serve or return, so this is normally smaller than the
+            number of points played. Shown beside every "of N points
+            played" figure and cross-checked against the reconstruction's
+            own point count by quality_check.check_footage_rally_count.
+            None when the uploader did not say. Staged JSON only, never a
+            database column.
         reviewer_note: The reviewer's own account, written at upload time,
             of anything the reconstruction can't see for itself - most
             often why there is more than one export ("part 2 restarts
@@ -240,6 +280,7 @@ class MatchRecord:
     cons: str | None = None
     notes: str | None = None
     player_appearance: str | None = None
+    footage_rally_count: int | None = None
     reviewer_note: str | None = None
     source_file: str | None = None
     source_files: list[str] | None = None

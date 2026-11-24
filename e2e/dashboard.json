@@ -23,14 +23,16 @@
           "h1",
           "#load",
           "input[name='xlsx_files']",
-          "input[name='player_appearance']"
+          "input[name='player_appearance']",
+          "input[name='footage_rally_count']"
         ],
         "text_present": [
           "Rally AI",
           "Every match you play, kept honestly.",
           "Load a match",
           "A reviewed record of how you actually play",
-          "pick you out of the frame"
+          "pick you out of the frame",
+          "the most a footage check can ever reach"
         ],
         "text_absent": [
           "RallyAI",

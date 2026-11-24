@@ -1,0 +1,67 @@
+import sys, json, logging
+sys.path.insert(0,'src'); sys.path.insert(0,'.')
+logging.disable(logging.CRITICAL)
+from pathlib import Path
+from collections import Counter
+from swingvision_import.config import ImportConfig
+from swingvision_import.parse import SwingVisionParser
+from swingvision_import import reconstruct
+raw = SwingVisionParser(ImportConfig()).parse(Path("SwingVision-match-2026-08-21 at 13.14.26.xlsx"))
+by = reconstruct.group_shots_by_point(raw.shots); keys = sorted(by)
+b = json.load(open(sys.argv[1])); clips = [b[i+1]-b[i] for i in range(len(b)-1)]
+def units(merge):
+    out=[]
+    for k in keys:
+        v=by[k]
+        if merge and v[0].shot_type=="second_serve" and out and len(out[-1][1])==1 and out[-1][1][0].shot_type=="first_serve":
+            out[-1]=(out[-1][0]+[k], out[-1][1]+v)
+        else: out.append(([k], list(v)))
+    return out
+def align(us, pad, skip_clip=6.0):
+    spans=[u[1][-1].video_time-u[1][0].video_time+pad for u in us]
+    n,m=len(clips),len(spans); INF=1e18
+    D=[[INF]*(m+1) for _ in range(n+1)]; B=[[None]*(m+1) for _ in range(n+1)]
+    for j in range(m+1): D[0][j]=0.0; B[0][j]='s'
+    for i in range(1,n+1):
+        D[i][0]=D[i-1][0]+skip_clip; B[i][0]='c'
+        for j in range(1,m+1):
+            best=D[i][j-1]; bb='s'                       # skip sheet unit (free)
+            c=D[i-1][j-1]+abs(clips[i-1]-spans[j-1])
+            if c<best: best,bb=c,'m'
+            c=D[i-1][j]+skip_clip
+            if c<best: best,bb=c,'c'
+            D[i][j]=best; B[i][j]=bb
+    i,j=n,m; pairs=[]; unmatched_clips=0
+    while i>0:
+        x=B[i][j]
+        if x=='m': pairs.append((i-1,j-1)); i-=1; j-=1
+        elif x=='s': j-=1
+        else: unmatched_clips+=1; i-=1
+    return D[n][m], pairs[::-1], unmatched_clips, spans
+for merge in (False, True):
+    us=units(merge)
+    best=min(((align(us,p)[0],p) for p in [x/2 for x in range(0,17)]))
+    cost,pairs,uc,spans=align(us,best[1])
+    errs=sorted(abs(clips[i]-spans[j]) for i,j in pairs)
+    matched={j for _,j in pairs}
+    skipped=[us[j] for j in range(len(us)) if j not in matched]
+    print(f"\nunits={'tennis points (fault+2nd serve merged)' if merge else 'sheet points as exported'}: {len(us)} units, {len(clips)} clips, best padding {best[1]}s")
+    print(f"  matched {len(pairs)} clips, {uc} clips unmatched; error median {errs[len(errs)//2]:.2f}s, 90th pct {errs[int(len(errs)*.9)]:.2f}s, within 1s: {sum(e<1 for e in errs)}, within 2s: {sum(e<2 for e in errs)}")
+    print("  units NOT in footage, by shot count:", sorted(Counter(len(u[1]) for u in skipped).items()))
+    print("  units IN footage, by shot count:   ", sorted(Counter(len(us[j][1]) for j in matched).items()))
+    print("  skipped 1-shot kinds:", Counter((u[1][0].shot_type,u[1][0].result) for u in skipped if len(u[1])==1))
+
+# Null test: the same clips in shuffled order should NOT align this well.
+import random
+us=units(False); real=clips[:]
+random.seed(1)
+for trial in range(3):
+    random.shuffle(clips)
+    cost,pairs,uc,spans=align(us,3.5)
+    errs=sorted(abs(clips[i]-spans[j]) for i,j in pairs)
+    print(f"shuffled order: matched {len(pairs)}, unmatched {uc}, median error {errs[len(errs)//2]:.2f}s, within 1s: {sum(e<1 for e in errs)}")
+clips[:]=real
+cost,pairs,uc,spans=align(us,3.5)
+json.dump([{"clip":i,"start":round(b[i],2),"end":round(b[i+1],2),"sheet_points":us[j][0]} for i,j in pairs], open(sys.argv[1].replace("clips.json","alignment.json"),"w"))
+bad=[(i,us[j][0],round(clips[i]-spans[j],1)) for i,j in pairs if abs(clips[i]-spans[j])>=1]
+print("the 7 loose matches (clip, sheet point, seconds off):", bad)

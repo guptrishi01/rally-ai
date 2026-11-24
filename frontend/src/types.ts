@@ -145,6 +145,9 @@ export interface FootageCheck {
  *  without "of 123 points played" context misleads about the tool's reach. */
 export interface FootageRunSummary {
   points_played: number
+  /** Rallies the footage itself holds, as the uploader counted them - the
+   *  ceiling on what a check can reach. Null when they did not say. */
+  footage_rally_count: number | null
   checked: number
   agreed: number
   disagreed: number
@@ -174,6 +177,8 @@ export interface FootageStatus {
   already_checked: number
   /** Denominator for every coverage figure the UI shows. */
   points_played: number
+  /** Rallies the footage itself holds, as the uploader counted them. */
+  footage_rally_count: number | null
   /** Points already marked as structurally absent from the condensed
    *  export - shown so "N confirmed" never reads without what is being
    *  left out. */
@@ -208,6 +213,8 @@ export interface PendingDetail {
    *  of the frame. Ends swap at changeovers, so "near"/"far" alone is not
    *  a stable way to say which player is you. */
   player_appearance: string | null
+  /** Rallies in the footage, as the uploader counted them at intake. */
+  footage_rally_count: number | null
   points: FlaggedPoint[]
 }
 

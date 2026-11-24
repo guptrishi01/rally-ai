@@ -111,3 +111,57 @@ def check_tracked_identity(
             "point_won."
         ]
     return []
+
+
+def check_footage_rally_count(
+    sets: list[SetRecord], footage_rally_count: int | None
+) -> list[str]:
+    """Cross-checks the uploader's rally count against the points rebuilt.
+
+    The rallies-only video holds fewer rallies than the import has points,
+    and why is not established: on the one export measured (2026-08-21),
+    the sheet's own Point counter restarts at every serve attempt, so a
+    first-serve fault is counted as a point of its own, and no single
+    definition of "rally" tested against the sheet reproduces the count.
+    So a count *below* the number of points is reported as the footage's
+    coverage ceiling without naming a cause, while a count *above* it
+    cannot be explained by the export format at all - the import is
+    missing points (recording gaps), or the count includes non-match
+    rallies such as a warm-up.
+
+    Args:
+        sets: The match's sets, reconstructed or direct-parsed.
+        footage_rally_count: Rallies in the footage, as the uploader
+            counted them, or None if they did not say.
+
+    Returns:
+        A single note when a usable count was supplied and the match has
+        points; empty otherwise.
+    """
+    if footage_rally_count is None or footage_rally_count <= 0:
+        return []
+    points = sum(len(set_record.points) for set_record in sets)
+    if points == 0:
+        return []
+    if footage_rally_count > points:
+        return [
+            f"You counted {footage_rally_count} rallies in the footage, but this import "
+            f"has only {points} points. Every rally is a point, so at least "
+            f"{footage_rally_count - points} point(s) are missing from the import "
+            "(most likely recording gaps) - or the count includes rallies that were "
+            "not part of the match, such as a warm-up."
+        ]
+    absent = points - footage_rally_count
+    if absent == 0:
+        return [
+            f"The footage holds {footage_rally_count} rallies and this import has "
+            f"{points} points - every point has a rally to check against."
+        ]
+    return [
+        f"The footage holds {footage_rally_count} rallies against {points} points in "
+        f"this import, so a footage check can reach at most {footage_rally_count} of "
+        f"{points} points ({round(100 * footage_rally_count / points)}%). At least "
+        f"{absent} point(s) in this import have no rally in the footage. Which ones "
+        "has not been established - do not assume it is the serve- or return-decided "
+        "points."
+    ]

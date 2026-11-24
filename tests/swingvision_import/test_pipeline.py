@@ -1415,3 +1415,48 @@ def test_condensed_mode_found_then_judged_can_still_auto_confirm(
     # miss would have contributed to not_in_footage instead.
     assert summary.checked > 0, "at least one point must reach the judge"
     assert summary.not_in_footage == 0
+
+
+def test_ingest_carries_the_rally_count_and_notes_the_coverage_ceiling(
+    timed_xlsx, import_config
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    baseline = load_pending(_stage_timed(pipeline, timed_xlsx))
+    points = sum(len(s.points) for s in baseline.sets)
+    assert points > 1, "fixture must produce more than one point"
+    assert not any("rallies" in note for note in baseline.import_notes)
+
+    json_path = pipeline.ingest(
+        timed_xlsx,
+        date="2026-08-06",
+        opponent="Alex",
+        result="W",
+        footage_rally_count=points - 1,
+    )
+    record = load_pending(json_path)
+
+    assert record.footage_rally_count == points - 1
+    assert any(
+        f"at most {points - 1} of {points} points" in note for note in record.import_notes
+    )
+
+
+def test_the_summary_carries_the_rally_count_beside_the_denominator(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """"Of N points played" says what was played; the rally count says how
+    much of that the footage can show at all. A summary that drops it
+    leaves the reviewer to rediscover the ceiling from the misses."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(
+        timed_xlsx, date="2026-08-06", opponent="Alex", result="W", footage_rally_count=2
+    )
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([]), json_path, [tmp_path / "video.mp4"], frame_source=_no_frames
+    )
+
+    assert summary.footage_rally_count == 2
+    assert summary.points_played > 0
