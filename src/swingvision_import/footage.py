@@ -40,6 +40,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -101,6 +102,16 @@ class FootageConfig:
         end_window_after: Seconds after the last shot to keep sampling -
             long enough to see the bounce and whether it was reached.
         end_frames: How many frames to take across that window.
+        ball_path: Add one composite image of everything that moved
+            around the finish (see compose_ball_path). Stills alone left
+            the ball's landing unseen: a first real sample reached no
+            high-confidence verdict, most saying so in as many words.
+        ball_path_before: Seconds before the last shot the composite
+            starts.
+        ball_path_after: Seconds after the last shot it runs to.
+        ball_path_width: Pixel width of the composite. Wider than the
+            stills on purpose - a far-court ball is a few pixels across
+            and the path is the one thing this image is for.
         workers: Points checked concurrently. Kept below suggestion
             workers because each request carries ~10 large images, which
             reaches input-token rate limits sooner.
@@ -141,11 +152,15 @@ class FootageConfig:
     end_window_before: float = 0.5
     end_window_after: float = 2.5
     end_frames: int = 8
+    ball_path: bool = True
+    ball_path_before: float = 0.3
+    ball_path_after: float = 3.0
+    ball_path_width: int = 1920
     workers: int = 4
     max_attempts: int = 4
     retry_base_delay: float = 2.0
     use_fallbacks: bool = True
-    estimated_output_tokens: int = 2500
+    estimated_output_tokens: int = 4000
     source: str = "full"
     retrieval_window: float = 25.0
     retrieval_frames: int = 6
@@ -161,11 +176,16 @@ class Frame:
         offset: Seconds relative to the point's last shot (negative is
             before it), so the model can reason about order and timing.
         jpeg: The encoded image.
+        caption: Text shown before the image in place of the usual
+            "Frame N (label, t=...)" line, for an image that is not a
+            single moment and needs explaining. `{n}` is replaced by the
+            frame's number.
     """
 
     label: str
     offset: float
     jpeg: bytes
+    caption: str | None = None
 
 
 @dataclass(frozen=True)
@@ -527,6 +547,252 @@ def extract_frames(
         return [p.read_bytes() for p in sorted(Path(tmp).glob("f*.jpg"))]
 
 
+# Tuned by eye on a real 1920x1080 recording, 30 frames a second.
+_PATH_FPS = 30
+_PATH_CHANGE = 20  # brightness change, of 255, that counts as movement
+_PATH_BLOCK = 40  # pixels; movement is counted per block of this size
+_PATH_CROWDED = 220  # moving pixels in a 3x3 block neighbourhood: a player
+_PPM_HEADER = re.compile(rb"P6\s+(\d+)\s+(\d+)\s+255\s")
+
+
+def _time_colour(fraction: float) -> np.ndarray:
+    """Blue at the start of the stretch, through green, to red at its end."""
+    fraction = min(1.0, max(0.0, fraction))
+    return np.array(
+        [255 * fraction, 255 * (1 - abs(fraction - 0.5) * 2), 255 * (1 - fraction)],
+        dtype=np.float32,
+    )
+
+
+def _crowded(moving: np.ndarray) -> np.ndarray:
+    """Marks the parts of a frame where a lot is moving at once.
+
+    A ball is a few dozen moving pixels with nothing moving around it; a
+    player is thousands. Counting per block and looking at each block's
+    neighbourhood tells them apart without any shape analysis.
+
+    Args:
+        moving: Boolean mask of pixels that moved in this frame.
+
+    Returns:
+        A mask the same shape, True where the movement is player-sized.
+    """
+    height, width = moving.shape
+    rows, cols = height // _PATH_BLOCK, width // _PATH_BLOCK
+    crowded = np.zeros_like(moving)
+    if not rows or not cols:
+        return crowded
+    inner = moving[: rows * _PATH_BLOCK, : cols * _PATH_BLOCK]
+    counts = inner.reshape(rows, _PATH_BLOCK, cols, _PATH_BLOCK).sum(axis=(1, 3))
+    padded = np.pad(counts, 1)
+    near = sum(padded[dy : dy + rows, dx : dx + cols] for dy in range(3) for dx in range(3))
+    blocks = np.repeat(np.repeat(near >= _PATH_CROWDED, _PATH_BLOCK, axis=0), _PATH_BLOCK, axis=1)
+    crowded[: rows * _PATH_BLOCK, : cols * _PATH_BLOCK] = blocks
+    return crowded
+
+
+def compose_ball_path(frames: Iterable[np.ndarray], expected: int) -> np.ndarray | None:
+    """Draws everything that moved across a run of frames onto the first one.
+
+    A still frame shows where the ball is; it does not show where it went,
+    and at this camera distance the bounce usually falls between frames.
+    This puts the whole flight in one picture: each frame's moving pixels
+    are painted in a colour for their time (blue first, red last), so a
+    ball becomes a dotted line whose colour says which way it travelled
+    and a bounce is the corner in that line. Ball-sized movement is
+    painted solid; player-sized movement only tints, so a player running
+    through does not bury the path.
+
+    Movement is "differs from the frame before AND the frame after", which
+    marks a thing where it is in that frame and leaves no ghost where it
+    was. Deterministic, and it never sees the sheet.
+
+    Args:
+        frames: RGB frames (height x width x 3, uint8), in time order.
+        expected: How many frames the stretch should hold, to scale the
+            colours by; a short read still ends at the right colour.
+
+    Returns:
+        The composite as an RGB uint8 array, or None if there were fewer
+        than three frames to compare.
+    """
+    canvas: np.ndarray | None = None
+    recent: list[np.ndarray] = []
+    index = 0
+    compared = 0
+    for frame in frames:
+        if canvas is None:
+            canvas = frame.astype(np.float32) * 0.6
+        # Green carries most of a tennis ball's brightness.
+        recent.append(frame[:, :, 1].astype(np.int16))
+        if len(recent) == 3:
+            before, current, after = recent
+            moving = (np.abs(current - before) > _PATH_CHANGE) & (
+                np.abs(current - after) > _PATH_CHANGE
+            )
+            compared += 1
+            if moving.any():
+                colour = _time_colour((index - 1) / max(1, expected - 1))
+                crowded = moving & _crowded(moving)
+                canvas[crowded] = canvas[crowded] * 0.7 + colour * 0.3
+                small = moving & ~crowded
+                # One pixel thicker, so a far-court ball survives any downscaling.
+                thick = small.copy()
+                thick[1:, :] |= small[:-1, :]
+                thick[:-1, :] |= small[1:, :]
+                thick[:, 1:] |= small[:, :-1]
+                thick[:, :-1] |= small[:, 1:]
+                canvas[thick] = colour
+            recent.pop(0)
+        index += 1
+    if canvas is None or not compared:
+        return None
+    return canvas.clip(0, 255).astype(np.uint8)
+
+
+def _read_ppm_frames(stream) -> Iterator[np.ndarray]:
+    """Yields RGB frames from a stream of binary PPM images.
+
+    PPM carries its own width and height, so nothing has to be known about
+    the video (or its rotation) in advance.
+    """
+    while True:
+        header = b""
+        while header.count(b"\n") < 3:
+            byte = stream.read(1)
+            if not byte:
+                return
+            header += byte
+        match = _PPM_HEADER.match(header)
+        if match is None:
+            return
+        width, height = int(match.group(1)), int(match.group(2))
+        raw = stream.read(width * height * 3)
+        if len(raw) < width * height * 3:
+            return
+        yield np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+
+
+def ball_path_image(
+    video: Path, start: float, duration: float, width: int, ffmpeg: str | None = None
+) -> bytes | None:
+    """Builds the ball-path composite for one stretch of video, as a JPEG.
+
+    Never raises: the composite is an aid on top of the stills, so a
+    stretch it cannot be built for is judged from the stills alone.
+
+    Args:
+        video: The video file.
+        start: Seconds from the start of the file; clamped at 0.
+        duration: Length of the stretch, in seconds.
+        width: Widest the composite may be; never upscaled.
+        ffmpeg: ffmpeg binary; located automatically if not given.
+
+    Returns:
+        The JPEG, or None if it could not be built.
+    """
+    exe = ffmpeg or ffmpeg_exe()
+    start = max(0.0, start)
+    try:
+        decode = subprocess.Popen(
+            [
+                exe,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start:.3f}",
+                "-i",
+                str(video),
+                "-t",
+                f"{duration:.3f}",
+                "-an",
+                "-vf",
+                f"fps={_PATH_FPS},scale='min({width},iw)':-2",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "ppm",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    try:
+        composite = compose_ball_path(
+            _read_ppm_frames(decode.stdout), round(duration * _PATH_FPS)
+        )
+    finally:
+        decode.stdout.close()
+        decode.wait()
+    if composite is None:
+        return None
+    height, wide = composite.shape[:2]
+    try:
+        encode = subprocess.run(
+            [
+                exe,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+                f"{wide}x{height}",
+                "-i",
+                "-",
+                "-frames:v",
+                "1",
+                "-q:v",
+                "3",
+                "-f",
+                "image2",
+                "-vcodec",
+                "mjpeg",
+                "-",
+            ],
+            input=composite.tobytes(),
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    if encode.returncode != 0 or not encode.stdout:
+        return None
+    return encode.stdout
+
+
+def ball_path_caption(before: float, after: float) -> str:
+    """Explains the composite to the judge. States no outcome.
+
+    Args:
+        before: Seconds before the last shot the composite starts.
+        after: Seconds after the last shot it ends.
+
+    Returns:
+        The caption, with `{n}` where the frame number goes.
+    """
+    return (
+        "Frame {n} (ball path) is NOT a single moment. It is the frame at "
+        f"t={-before:+.1f}s with everything that moved between then and "
+        f"t={after:+.1f}s drawn on top, coloured by when it moved: BLUE at the "
+        "start, through GREEN, to RED at the end. A ball in flight shows as a "
+        "line of small solid dots - its path. The colours give its direction "
+        "(it travels from bluer to redder), a sharp corner low in the path is "
+        "a bounce, and widely spaced dots mean it was moving fast. Players show "
+        "as faint tinted smears covering where they moved. Use it for what the "
+        "stills cannot show: where the final shot went, whether it cleared the "
+        "net, where it bounced relative to the court lines, and whether the "
+        "other player got to it or it bounced again. Be careful: balls and "
+        "people on neighbouring courts leave paths too, as does a spare ball "
+        "being cleared away after the point - read only a path that connects "
+        "to this point's players, and check it against the stills."
+    )
+
+
 # --------------------------------------------------------------------------
 # Planning
 # --------------------------------------------------------------------------
@@ -622,7 +888,8 @@ def frames_for_point(
     One frame at the serve (who is serving, from which end), one at the
     shot the final shot answered (was the player under pressure), then a
     run across the finish (where the ball went, and whether it was
-    reached).
+    reached), and last one composite of everything that moved across the
+    finish (the ball's whole path, which stills sample too thinly to show).
 
     Args:
         video: The recording this point is in.
@@ -651,6 +918,26 @@ def frames_for_point(
         Frame("finish", -config.end_window_before + i * step, jpeg)
         for i, jpeg in enumerate(finish)
     ]
+
+    if config.ball_path:
+        composite = ball_path_image(
+            video,
+            window.last_shot - config.ball_path_before,
+            config.ball_path_before + config.ball_path_after,
+            config.ball_path_width,
+            exe,
+        )
+        if composite is None:
+            logger.warning("%s: no ball-path image at %.1fs", video.name, window.last_shot)
+        else:
+            frames.append(
+                Frame(
+                    "ball path",
+                    -config.ball_path_before,
+                    composite,
+                    ball_path_caption(config.ball_path_before, config.ball_path_after),
+                )
+            )
     return frames
 
 
@@ -685,9 +972,10 @@ def _prompt(
         else ""
     )
     lines = [
-        "These are still frames from a fixed camera behind one end of a tennis "
+        "These are frames from a fixed camera behind one end of a tennis "
         "court, all from a single point. Each is labelled with its time in "
-        "seconds relative to the point's final shot (0.0).",
+        "seconds relative to the point's final shot (0.0); any frame that is "
+        "not a single moment says so in its own label.",
         "",
         "Context from the shot tracker (not an outcome):",
         f"- The TRACKED player is at the {side.upper()} end of the court; the "
@@ -758,9 +1046,11 @@ def _content(
     """Builds the user turn: labelled frames first, then the instructions."""
     blocks: list[dict] = []
     for i, frame in enumerate(frames, start=1):
-        blocks.append(
-            {"type": "text", "text": f"Frame {i} ({frame.label}, t={frame.offset:+.2f}s):"}
-        )
+        if frame.caption:
+            caption = frame.caption.replace("{n}", str(i))
+        else:
+            caption = f"Frame {i} ({frame.label}, t={frame.offset:+.2f}s):"
+        blocks.append({"type": "text", "text": caption})
         blocks.append(
             {
                 "type": "image",
@@ -1323,6 +1613,9 @@ def estimate_cost(points: int, config: FootageConfig, aspect: float = 16 / 9) ->
     per_frame = frame_tokens(config.frame_width, height)
     frames = config.end_frames + 2
     input_per_point = frames * per_frame + frames * 12 + 1100  # images + labels + prompt
+    if config.ball_path:
+        path_height = math.ceil(config.ball_path_width / aspect / 2) * 2
+        input_per_point += frame_tokens(config.ball_path_width, path_height) + 260
     in_price, out_price = _PRICES.get(config.model, _PRICES["claude-opus-5"])
     usd = points * (
         input_per_point * in_price + config.estimated_output_tokens * out_price

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 import anthropic
 import httpx
+import numpy as np
 import pytest
 
 from swingvision_import import footage
@@ -705,8 +707,6 @@ def test_actual_cost_prices_each_model_at_its_own_rate(model, expected):
 
 def _clicks(times: list[float], seconds: float, rate: int = 8000):
     """Quiet noise with one sharp click per strike time."""
-    import numpy as np
-
     rng = np.random.default_rng(7)
     samples = rng.normal(0, 20, int(seconds * rate)).astype(np.int16)
     for moment in times:
@@ -736,16 +736,12 @@ def test_offset_from_audio_does_not_trust_audio_with_no_strikes_in_it():
 
 
 def test_offset_from_audio_needs_audio_and_shots():
-    import numpy as np
-
     assert footage.offset_from_audio(np.zeros(10, dtype=np.int16), [1.0]) is None
     assert footage.offset_from_audio(_clicks([1.0], seconds=5), []) is None
     assert footage.offset_from_audio(np.zeros(80000, dtype=np.int16), [1.0, 2.0]) is None
 
 
 def test_offset_from_audio_returns_nothing_when_every_offset_scores_the_same():
-    import numpy as np
-
     # A steady ramp has the same onset everywhere, so no offset stands out.
     ramp = (np.arange(80000) % 30000).astype(np.int16)
     assert footage.offset_from_audio(ramp, [100.0, 200.0]) is None
@@ -805,3 +801,118 @@ def test_measure_clock_offset_gives_up_quietly_when_the_audio_cannot_be_read(mon
     assert footage.measure_clock_offset(tmp_path / "silent.mp4", [1.0], "ffmpeg") is None
     monkeypatch.setattr(footage.subprocess, "run", no_binary)
     assert footage.measure_clock_offset(tmp_path / "silent.mp4", [1.0], "ffmpeg") is None
+
+
+# ---------------------------------------------------------------------------
+# The ball-path composite
+# ---------------------------------------------------------------------------
+
+
+def _scene(ball=None, player=None):
+    frame = np.full((120, 160, 3), 60, dtype=np.uint8)
+    if ball is not None:
+        frame[ball[0] : ball[0] + 3, ball[1] : ball[1] + 3] = 230
+    if player is not None:
+        frame[40:120, player : player + 40] = 200
+    return frame
+
+
+def test_a_ball_becomes_a_solid_path_coloured_from_blue_to_red():
+    frames = [_scene(ball=(20, 10 + 12 * i)) for i in range(10)]
+
+    image = footage.compose_ball_path(frames, expected=10)
+
+    early, late = image[21, 23], image[21, 107]  # the ball in frames 1 and 8
+    assert early[2] > 200 and early[0] < 60  # blue first
+    assert late[0] > 200 and late[2] < 60  # red last
+    # The ball's position in the first frame is never "moving": no frame before it.
+    assert tuple(image[80, 80]) == (36, 36, 36)  # the still background, dimmed
+
+
+def test_a_player_only_tints_so_the_ball_stays_readable():
+    frames = [_scene(ball=(10, 10 + 12 * i), player=20 + 8 * i) for i in range(10)]
+
+    image = footage.compose_ball_path(frames, expected=10)
+
+    assert image[11, 59].max() > 200  # ball-sized movement is painted solid
+    smear = image[80, 30:130].astype(int)
+    assert smear.max() < 200  # player-sized movement is blended, never solid
+    assert (smear != 36).any()
+
+
+def test_a_still_scene_or_too_few_frames_draws_nothing():
+    assert footage.compose_ball_path([_scene(), _scene()], expected=2) is None
+    image = footage.compose_ball_path([_scene()] * 5, expected=5)
+    assert (image == 36).all()
+
+
+def test_the_ball_path_caption_explains_the_image_and_asserts_no_outcome():
+    caption = footage.ball_path_caption(0.3, 3.0).replace("{n}", "11")
+
+    assert caption.startswith("Frame 11 (ball path) is NOT a single moment")
+    assert "t=-0.3s" in caption and "t=+3.0s" in caption
+    words = set(re.findall(r"[a-z]+", caption.lower()))
+    assert not words & {"winner", "won", "lost", "error", "fault", "ace", "missed"}
+
+
+def test_a_captioned_frame_is_introduced_by_its_caption():
+    frames = [
+        footage.Frame("finish", 0.0, b"a"),
+        footage.Frame("ball path", -0.3, b"b", "Frame {n} is the path."),
+    ]
+    window = footage.PointWindow(0, 1.0, None, 2.0, True, "near", 3)
+
+    blocks = footage._content(frames, window, None)
+
+    texts = [b["text"] for b in blocks if b["type"] == "text"]
+    assert texts[0] == "Frame 1 (finish, t=+0.00s):"
+    assert texts[1] == "Frame 2 is the path."
+
+
+def test_frames_for_point_ends_with_the_ball_path(tiny_video):
+    window = footage.PointWindow(0, 1.0, 1.5, 2.0, True, "near", 3)
+    config = footage.FootageConfig(frame_width=320, end_frames=3, ball_path_width=320)
+
+    frames = footage.frames_for_point(tiny_video, window, config)
+
+    assert frames[-1].label == "ball path"
+    assert frames[-1].jpeg[:2] == b"\xff\xd8"
+    assert frames[-1].caption == footage.ball_path_caption(0.3, 3.0)
+    assert all(frame.caption is None for frame in frames[:-1])
+
+
+def test_the_ball_path_can_be_switched_off(tiny_video):
+    window = footage.PointWindow(0, 1.0, None, 2.0, True, "near", 3)
+    config = footage.FootageConfig(frame_width=320, end_frames=3, ball_path=False)
+
+    frames = footage.frames_for_point(tiny_video, window, config)
+
+    assert [frame.label for frame in frames] == ["serve", "finish", "finish", "finish"]
+
+
+def test_a_stretch_with_no_ball_path_is_judged_from_the_stills(tiny_video, tmp_path, monkeypatch):
+    assert footage.ball_path_image(tmp_path / "missing.mp4", 0.0, 1.0, 320) is None
+    assert footage.ball_path_image(tiny_video, 60.0, 1.0, 320) is None  # past the end
+
+    def no_ffmpeg(*args, **kwargs):
+        raise OSError("no ffmpeg")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(footage.subprocess, "Popen", no_ffmpeg)
+        assert footage.ball_path_image(tiny_video, 0.0, 1.0, 320) is None
+
+    monkeypatch.setattr(footage, "ball_path_image", lambda *args: None)
+    window = footage.PointWindow(0, 1.0, None, 2.0, True, "near", 3)
+    frames = footage.frames_for_point(
+        tiny_video, window, footage.FootageConfig(frame_width=320, end_frames=3)
+    )
+    assert "ball path" not in [frame.label for frame in frames]
+
+
+def test_the_estimate_counts_the_ball_path_image():
+    with_path = footage.estimate_cost(10, footage.FootageConfig())
+    without = footage.estimate_cost(10, footage.FootageConfig(ball_path=False))
+
+    assert with_path.input_tokens_per_point - without.input_tokens_per_point == (
+        footage.frame_tokens(1920, 1080) + 260
+    )

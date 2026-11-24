@@ -481,3 +481,63 @@ def test_a_third_attempt_starts_a_new_point():
 
     assert result.merged_fault_points == [1]
     assert [p.point_end_type for p in result.points] == ["double_fault", "ace"]
+
+
+# ---------------------------------------------------------------------------
+# What the players did next outranks a serve's own Result cell
+# ---------------------------------------------------------------------------
+
+
+def test_a_serve_marked_out_that_the_server_played_on_from_was_in():
+    # Real export, point 2: a first-serve fault, then a serve marked "Out"
+    # with a five-shot rally behind it. That read as a double fault the
+    # server won - a pair the point table's own CHECK constraint rejects.
+    shots = [
+        _serve(1, HOST, "first_serve", "Out", "deuce"),
+        _serve(2, HOST, "first_serve", "Out", "deuce"),
+        RawShotRow(2, 2, GUEST, "first_return", "Forehand", "In"),
+        RawShotRow(2, 3, HOST, "serve_plus_one", "Forehand", "In"),
+    ]
+
+    point = reconstruct_all(shots, HOST).points[0]
+
+    assert point.point_end_type == "winner"
+    assert point.point_won is True
+    assert point.first_serve_in is False
+    assert point.second_serve_in is True
+
+
+def test_a_double_fault_is_lost_even_when_the_fault_was_hit_back_into_the_net():
+    shots = [
+        _shot(6, 1, HOST, "second_serve", "Serve", "Out"),
+        _shot(6, 2, GUEST, "second_return", "Backhand", "Net"),
+    ]
+
+    point = reconstruct_point(6, shots, HOST)
+
+    assert point.point_end_type == "double_fault"
+    assert point.point_won is False
+
+
+def test_the_opponents_double_fault_is_won_even_when_we_hit_the_fault_out():
+    shots = [
+        _shot(6, 1, GUEST, "second_serve", "Serve", "Net"),
+        _shot(6, 2, HOST, "second_return", "Backhand", "Out"),
+    ]
+
+    point = reconstruct_point(6, shots, HOST)
+
+    assert point.point_end_type == "return_winner"
+    assert point.point_won is True
+
+
+def test_an_unreturned_second_serve_after_a_fault_is_an_ace():
+    shots = [
+        _serve(1, HOST, "first_serve", "Net", "ad"),
+        _serve(2, HOST, "second_serve", "In", "ad"),
+    ]
+
+    point = reconstruct_all(shots, HOST).points[0]
+
+    assert point.point_end_type == "ace"
+    assert point.point_won is True

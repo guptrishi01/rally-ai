@@ -137,8 +137,8 @@ def _coarse_end_type(
     is_serving: bool,
     point_won: bool,
     shot_count: int,
-    first_serve_shot: RawShotRow | None,
-    second_serve_shot: RawShotRow | None,
+    live_serve: RawShotRow | None,
+    double_fault: bool,
 ) -> str:
     """Buckets a point into one of the point table's allowed end types.
 
@@ -149,16 +149,18 @@ def _coarse_end_type(
         is_serving: Whether the tracked player served this point.
         point_won: Whether the tracked player won this point.
         shot_count: Total shots recorded for this point.
-        first_serve_shot: The point's first_serve shot, if any.
-        second_serve_shot: The point's second_serve shot, if any.
+        live_serve: The serve the point was actually played from - its
+            last serve shot, if any.
+        double_fault: Whether the point ended on a missed second serve
+            (see reconstruct_point), whoever was serving.
 
     Returns:
         One of the point table's allowed point_end_type values.
     """
     if is_serving:
-        if shot_count == 1 and first_serve_shot is not None and first_serve_shot.result == "In":
+        if shot_count == 1 and live_serve is not None and live_serve.result == "In":
             return "ace"
-        if second_serve_shot is not None and second_serve_shot.result != "In":
+        if double_fault:
             return "double_fault"
         return "winner" if point_won else "unforced_error"
     # Not serving: if the point ended at the return itself (server's serve +
@@ -248,26 +250,44 @@ def reconstruct_point(
     else:
         first_serve_shot = next((s for s in shots if s.shot_type == "first_serve"), None)
         second_serve_shot = next((s for s in shots if s.shot_type == "second_serve"), None)
-    # A serve that was followed by a second serve was a fault, whatever
-    # its own Result cell says.
-    if faulted_serve is not None:
-        first_serve_in: bool | None = False
-    else:
-        first_serve_in = first_serve_shot.result == "In" if first_serve_shot else None
-    second_serve_in = second_serve_shot.result == "In" if second_serve_shot else None
+    # What the players did next outranks a serve's own Result cell, both
+    # ways. A serve that was followed by a second serve was a fault. And a
+    # serve its server went on to hit another shot behind was in: nobody
+    # plays on from their own fault. Seen on a real export - a serve marked
+    # "Out" with a five-shot rally after it, which read as a double fault
+    # the server then won.
+    serve_positions = [i for i, s in enumerate(shots) if s.shot_type in _SERVE_TYPES]
+    live_serve = shots[serve_positions[-1]] if serve_positions else None
+    played_on = live_serve is not None and any(
+        s.player == live_serve.player for s in shots[serve_positions[-1] + 1 :]
+    )
+
+    def _landed_in(serve: RawShotRow | None) -> bool | None:
+        if serve is None:
+            return None
+        return serve.result == "In" or (serve is live_serve and played_on)
+
+    first_serve_in = False if faulted_serve is not None else _landed_in(first_serve_shot)
+    second_serve_in = _landed_in(second_serve_shot)
+    double_fault = second_serve_shot is not None and second_serve_in is False
 
     last_shot = shots[-1]
     last_shot_by_host = last_shot.player == host_name
-    # A shot that lands 'In' with no reply ends the point for its hitter
-    # (a winner); anything else (Out/Net) ends it against its hitter.
-    point_won = last_shot_by_host if last_shot.result == "In" else not last_shot_by_host
+    if double_fault:
+        # The point was over at the serve; a return swatted back off a
+        # fault is not a shot that decided anything.
+        point_won = not is_serving
+    else:
+        # A shot that lands 'In' with no reply ends the point for its
+        # hitter (a winner); anything else (Out/Net) ends it against them.
+        point_won = last_shot_by_host if last_shot.result == "In" else not last_shot_by_host
 
     point_end_type = _coarse_end_type(
         is_serving=is_serving,
         point_won=point_won,
         shot_count=len(shots),
-        first_serve_shot=first_serve_shot,
-        second_serve_shot=second_serve_shot,
+        live_serve=live_serve,
+        double_fault=double_fault,
     )
 
     net_approach = any(s.player == host_name and s.stroke in _NET_STROKES for s in shots)

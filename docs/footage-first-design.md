@@ -112,6 +112,45 @@ confidence: one read of 10 frames at this camera distance does not get to
 high. That is what stages 3-5 were designed for. The full-match run (about
 $12 more) was not made.
 
+## 0d. Third paid run: the ball-path composite (2026-11-24, $1.82)
+
+Same 10 points, one extra image each: everything that moved from 0.3s
+before the last shot to 3.0s after, drawn on one frame and coloured by
+time, so the ball's flight is a dotted line.
+
+| Point | Sheet | Stills only | With ball path |
+|---|---|---|---|
+| 2 | won, winner | won, winner (low) | won, winner (medium) |
+| 26 | lost, unforced error | won, winner (medium) | won, winner (medium) |
+| 48 | won, return winner | lost, return error (medium) | won, return winner (medium) |
+| 68 | lost, unforced error | lost, unforced error (medium) | won, winner (medium) |
+| 93 | won, winner | lost, unforced error (low) | lost, unforced error (low) |
+| 115 | won, winner | won, winner (low) | won, winner (low) |
+| 137 | won, winner | won, winner (medium) | won, winner (low) |
+| 161 | won, return winner | unclear (low) | won, return winner (low) |
+| 180 | won, winner | won, winner (medium) | won, winner (medium) |
+| 202 | lost, unforced error | lost, unforced error (medium) | lost, unforced error (medium) |
+
+(The sheet column is after the 5.9.0 double-fault fix; point 2 had read
+"double fault, won".)
+
+- **Confidence did not move:** 6 medium, 4 low, 0 high, both times. The
+  stop condition in section 5 ("if dense frames still return mostly low")
+  is not met - mostly medium - but the high bar is not reached either.
+  What decides most of these is a line call at the far baseline, and no
+  single image from behind the near baseline settles that.
+- **Readings did improve:** 10 of 10 readable (was 9), winner matches the
+  sheet on 7 (was 6 of 9).
+- **The two readings agree with each other on 7 of 10** - above the
+  "fewer than half" stop condition for stage 3 against stage 4.
+- **All three agree on 5** (2, 115, 137, 180, 202). The two readings agree
+  against the sheet on 2 (26, 93). They split on 3 (48, 68, 161).
+
+So the route to clearing flags is not a more confident single read; it is
+agreement between readings that were given different evidence. That is the
+rule change in section 3, and it is still waiting on a yes. Ten points
+remains a small sample.
+
 ## 1. Two facts that change the plan
 
 **The API does not take video.** The earlier plan said "short video clips,
