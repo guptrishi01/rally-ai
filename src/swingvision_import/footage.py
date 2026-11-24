@@ -1047,15 +1047,24 @@ def locate_point_in_condensed(
     last_exc: Exception | None = None
     while attempt < config.max_attempts:
         attempt += 1
+        # Same request shape as judge_point: output_config with an effort and
+        # a JSON schema, not thinking={"type":"enabled"}. claude-opus-5
+        # rejects the old shape, and keeping the two call sites aligned
+        # means a future shape change only needs one edit.
+        kwargs: dict = {
+            "model": config.model,
+            "max_tokens": config.max_tokens,
+            "output_config": {
+                "effort": config.effort,
+                "format": {"type": "json_schema", "schema": LOCATION_SCHEMA},
+            },
+            "messages": [{"role": "user", "content": content}],
+        }
+        if switch.enabled:
+            kwargs["betas"] = [_FALLBACK_BETA]
+            kwargs["fallbacks"] = "default"
         try:
-            betas = [_FALLBACK_BETA] if switch.enabled else []
-            response = client.beta.messages.create(
-                model=config.model,
-                max_tokens=config.max_tokens,
-                thinking={"type": "enabled", "budget_tokens": 4000},
-                betas=betas,
-                messages=[{"role": "user", "content": content}],
-            )
+            response = client.beta.messages.create(**kwargs)
             raw = extract_text(response)
             data = json.loads(_strip_markdown_fence(raw))
             return LocationVerdict(
@@ -1067,9 +1076,9 @@ def locate_point_in_condensed(
                 output_tokens=response.usage.output_tokens,
             )
         except anthropic.BadRequestError as exc:
-            if switch.enabled:
+            if switch.enabled and "fallback" in str(exc).lower():
                 switch.disable()
-                attempt -= 1
+                attempt -= 1  # not the call's fault
                 continue
             last_exc = exc
             break

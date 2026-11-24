@@ -139,13 +139,69 @@ locate is marked `"not_in_condensed_footage"` and stays `needs_review=True`
 "X of Y points played verified; Z not in this footage", so the number has
 a denominator every time it is shown.
 
-A sample run of 10 flagged points (spread across the match) on
-`claude-opus-5` is held pending an `ANTHROPIC_API_KEY` refresh (the
-current key returns 401). Projected cost is under $1 for the sample based
-on token sizes measured in the retrieval prompt, with the full 173-point
-sweep projected to land near $5-$10 if retrieval hit rate matches the
-~70% coverage ceiling (hits cost a retrieval call plus a judge call;
-misses cost only the retrieval call).
+## 10-point sample on the real file
+
+Ran on 2026-11-23, 10 flagged points spread across the match, on
+`claude-opus-5` with retrieval_window=25s, retrieval_frames=6.
+
+| | |
+|---|---|
+| total spend | **$0.86** |
+| per-call cost | $0.07-$0.11 |
+| wall time per call | 3-26s (median ~8s) |
+| `found=True` | 7 of 10 |
+| `found=False` | 3 of 10 (two for honest reasons: wrong server, no net approach) |
+| verdicts at `high` confidence | **0** |
+| verdicts at `medium` confidence | **0** |
+| verdicts at `low` confidence | 10 |
+
+The retrieval discriminates well. Correct rejection reasons the model
+produced include *"no approach to the net that would produce the
+described backhand volley"* (pt25, which the sheet says ended on a
+`Backhand Volley`) and *"the described rally begins with an OPPONENT
+serve"* vs. a video showing the tracked player serving (pt93). The
+shot fingerprints are being used.
+
+But **no verdict reaches a confidence the auto-confirm rule accepts.**
+Stills cannot verify stroke type or speed - the model says this out
+loud - and `compare()` only auto-confirms on `high` confidence, so
+under the current pipeline no point is ever cleared by retrieval on
+condensed footage. That is the honest outcome: the pipeline marks
+every retrieval result `"not_in_condensed_footage"` and leaves the
+point for a human, with the model's reasoning attached as context.
+
+### What this means for the full sweep
+
+Projecting to all 174 flagged points at the sample's per-call cost:
+
+| | |
+|---|---|
+| full-match retrieval sweep | **~$15** |
+| additional judge calls it would trigger | **$0** (no verdict is confidence-high enough) |
+| auto-confirmations at the current bar | **0** |
+
+So the current condensed path is worth running for **the attached
+reasoning** - which is richer than "needs review" alone and does help
+the reviewer - but not for reducing the review slog. That is the
+measurement, not a preference.
+
+### What would change this
+
+Both options are future work and need their own evidence pass:
+
+- **Short video clips instead of stills.** The model's own stated
+  reason for low confidence is that stroke type and speed cannot be
+  read from a frame. A ~3s H.264 clip per sampled offset would carry
+  motion. New prompt shape, different cost model, bigger engineering
+  lift.
+- **Confidence-aware auto-confirm, condensed-mode-only.** The current
+  compare rule is written for full-length footage, where a single
+  `high` verdict is believable because the judge saw the actual
+  moment. In condensed mode, a `medium` verdict that comes with the
+  right server, the right player at the right end, the right shot
+  count, and a stated reason could be sufficient. But this is a
+  loosening of the honesty rule and should only follow a run where the
+  model actually produces medium verdicts worth trusting.
 
 ## Identifying the tracked player
 
