@@ -6,6 +6,7 @@ from swingvision_import.reconstruct import (
     assign_game_set_boundaries,
     build_shot_pattern_summary,
     group_shots_by_point,
+    is_second_serve_attempt,
     merge_shots,
     reconstruct_all,
     reconstruct_point,
@@ -358,3 +359,125 @@ def test_merge_shots_handles_an_empty_file_without_disrupting_the_offset():
     merged = merge_shots([file1, empty_file, file2])
 
     assert [s.point_number for s in merged] == [1, 2]
+
+
+def _serve(point, player, shot_type, result, zone=None) -> RawShotRow:
+    return RawShotRow(point, 1, player, shot_type, "Serve", result, hit_zone=zone)
+
+
+def test_a_fault_and_the_serve_after_it_from_the_same_side_are_one_point():
+    # The real pattern: SwingVision numbers each serve attempt as its own
+    # "point", and here labels both attempts first_serve.
+    shots = [
+        _serve(1, HOST, "first_serve", "Out", "deuce"),
+        _serve(2, HOST, "first_serve", "In", "deuce"),
+        _shot(2, 2, GUEST, "first_return", "Forehand", "Net"),
+        _serve(3, HOST, "first_serve", "In", "ad"),
+    ]
+
+    result = reconstruct_all(shots, HOST)
+
+    assert result.merged_fault_points == [1]
+    assert [p.point_number for p in result.points] == [2, 3]
+    merged = result.points[0]
+    assert merged.first_serve_in is False
+    assert merged.second_serve_in is True
+    assert merged.point_won is True
+
+
+def test_a_fault_then_a_missed_second_serve_is_a_double_fault():
+    shots = [
+        _serve(1, HOST, "first_serve", "Net", "ad"),
+        _serve(2, HOST, "second_serve", "Out", "ad"),
+    ]
+
+    result = reconstruct_all(shots, HOST)
+
+    assert len(result.points) == 1
+    assert result.points[0].point_end_type == "double_fault"
+    assert result.points[0].point_won is False
+
+
+def test_a_fault_returned_anyway_still_folds_into_the_second_serve():
+    # A returner often hits a faulted serve back; the stray return must not
+    # make the fault a point of its own.
+    shots = [
+        _serve(1, HOST, "first_serve", "Out", "deuce"),
+        _shot(1, 2, GUEST, "first_return", "Backhand", "In"),
+        _serve(2, HOST, "first_serve", "In", "deuce"),
+    ]
+
+    assert reconstruct_all(shots, HOST).merged_fault_points == [1]
+
+
+def test_serves_from_alternating_sides_are_separate_points():
+    shots = [
+        _serve(1, HOST, "first_serve", "Out", "deuce"),
+        _serve(2, HOST, "first_serve", "In", "ad"),
+    ]
+
+    result = reconstruct_all(shots, HOST)
+
+    assert result.merged_fault_points == []
+    assert len(result.points) == 2
+
+
+def test_a_first_serve_that_landed_in_is_not_folded_into_the_next_serve():
+    # Same side twice with the first serve in is a let or a tracking slip -
+    # ambiguous, so it is left as two points for the reviewer.
+    previous = [_serve(1, HOST, "first_serve", "In", "deuce")]
+    current = [_serve(2, HOST, "first_serve", "In", "deuce")]
+
+    assert is_second_serve_attempt(previous, current) is False
+
+
+def test_swingvisions_own_second_serve_label_outweighs_an_in_first_serve():
+    previous = [_serve(1, HOST, "first_serve", "In", "deuce")]
+    current = [_serve(2, HOST, "second_serve", "In", "deuce")]
+
+    assert is_second_serve_attempt(previous, current) is True
+
+
+def test_different_servers_are_never_one_point():
+    previous = [_serve(1, HOST, "first_serve", "Out", "deuce")]
+    current = [_serve(2, GUEST, "second_serve", "In", "deuce")]
+
+    assert is_second_serve_attempt(previous, current) is False
+
+
+def test_attempts_from_different_export_parts_are_never_one_point():
+    previous = [_serve(1, HOST, "first_serve", "Out", "deuce")]
+    current = [
+        RawShotRow(2, 1, HOST, "second_serve", "Serve", "In", hit_zone="deuce", source_part=1)
+    ]
+
+    assert is_second_serve_attempt(previous, current) is False
+
+
+def test_without_a_serving_side_the_second_serve_label_decides():
+    fault = [_serve(1, HOST, "first_serve", "Out")]
+
+    assert is_second_serve_attempt(fault, [_serve(2, HOST, "second_serve", "In")]) is True
+    assert is_second_serve_attempt(fault, [_serve(2, HOST, "first_serve", "In")]) is False
+
+
+def test_an_attempt_with_no_serve_is_never_a_second_serve():
+    previous = [_serve(1, HOST, "first_serve", "Out", "deuce")]
+    current = [_shot(2, 1, GUEST, "in_play", "Forehand", "In")]
+
+    assert is_second_serve_attempt(previous, current) is False
+
+
+def test_a_third_attempt_starts_a_new_point():
+    # Fault, fault (a double fault), then the next point's serve: only the
+    # first pair is one point.
+    shots = [
+        _serve(1, HOST, "first_serve", "Out", "deuce"),
+        _serve(2, HOST, "second_serve", "Out", "deuce"),
+        _serve(3, HOST, "first_serve", "In", "ad"),
+    ]
+
+    result = reconstruct_all(shots, HOST)
+
+    assert result.merged_fault_points == [1]
+    assert [p.point_end_type for p in result.points] == ["double_fault", "ace"]

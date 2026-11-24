@@ -91,6 +91,27 @@ The merge rule "a `second_serve` after a one-shot `first_serve`" would miss
 this pair. Serving side (same server, same side, twice running) is the
 better signal; not yet measured across the match.
 
+## 0c. First paid runs on the full recording (2026-11-24, $2.02)
+
+**Sample 1 - $1.00, 10 points, 10 inconclusive.** Five verdicts said the
+rally was still live in the last frame. Cause: the video runs 1.99s behind
+the sheet's `Video Time` (the serve the sheet puts at 24.92s is struck at
+about 26.8s). Measured from the audio track - ball strikes against shot
+times - the offset is 1.98-2.00s in every sixth of the match.
+
+**Sample 2 - $1.02, same 10 points, clock corrected.** Every verdict now
+describes the end of the point. Server read correctly 10 of 10. Winner
+agrees with the sheet on 6 of the 9 points with a reading (3 disagree, 1
+unclear). Confidence: 6 medium, 4 low, 0 high - so the agreement rule,
+which needs high, cleared nothing. Ten points is a small sample; the 6-of-9
+figure is not a rate to plan around.
+
+**What this says about the plan below.** Locating is solved for the full
+recording (timestamps plus the audio offset). The open problem is now only
+confidence: one read of 10 frames at this camera distance does not get to
+high. That is what stages 3-5 were designed for. The full-match run (about
+$12 more) was not made.
+
 ## 1. Two facts that change the plan
 
 **The API does not take video.** The earlier plan said "short video clips,

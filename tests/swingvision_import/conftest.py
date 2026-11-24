@@ -28,8 +28,8 @@ def add_settings_and_shots_sheets(
         guest_name: Value for Settings' "Guest Team" column.
         shot_rows: Optional data rows for the Shots sheet, each
             [point, shot, player, type, stroke, result] and optionally
-            [..., video_time, hit_side] when the test needs footage
-            timing. Defaults to none (header only), which parses to an
+            [..., video_time, hit_side, hit_zone] when the test needs
+            footage timing or the serving side. Defaults to none (header only), which parses to an
             empty shot list.
     """
     settings_sheet = workbook.create_sheet("Settings")
@@ -40,7 +40,17 @@ def add_settings_and_shots_sheets(
     # Video Time / Hit Side are optional in a real export and only footage
     # checks read them, so tests that don't care just supply six columns.
     shots_sheet.append(
-        ["Point", "Shot", "Player", "Type", "Stroke", "Result", "Video Time", "Hit Side"]
+        [
+            "Point",
+            "Shot",
+            "Player",
+            "Type",
+            "Stroke",
+            "Result",
+            "Video Time",
+            "Hit Side",
+            "Hit Zone",
+        ]
     )
     for row in shot_rows or []:
         shots_sheet.append(row)

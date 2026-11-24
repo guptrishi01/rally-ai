@@ -140,11 +140,18 @@ class RawShotRow:
             it tracks the wall clock exactly (Settings start + video_time ==
             the shot's own Start Time, zero drift over 180 points), so it
             indexes the original recording - **not** SwingVision's
-            condensed rallies-only export, which is ~1/5 as long. None when
-            the column is absent.
+            condensed rallies-only export, which is ~1/5 as long. Matching
+            the wall clock is not matching the video file: one real
+            recording ran 1.99s behind these times, which
+            footage.measure_clock_offset corrects for. None when the
+            column is absent.
         hit_side: Which end of the court the hitter stood at, "near" or
             "far" relative to the camera ("Hit Side"). Lets footage checks
             say who is who without naming anyone. None when absent.
+        hit_zone: Which half of the baseline the hitter stood in, "deuce"
+            or "ad" ("Hit Zone"). On a serve this is the serving side,
+            which is what tells a second serve (same server, same side
+            again) from the next point (other side). None when absent.
         source_part: Index of the export this shot came from, for a match
             merged from several files (see reconstruct.merge_shots). Each
             part's video_time is relative to *that part's own* recording,
@@ -160,6 +167,7 @@ class RawShotRow:
     result: str
     video_time: float | None = None
     hit_side: str | None = None
+    hit_zone: str | None = None
     source_part: int = 0
     # Spin and speed are only read by footage retrieval; they give the
     # shot a content-addressable fingerprint when seeking into the

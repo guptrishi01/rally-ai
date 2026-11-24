@@ -179,9 +179,7 @@ def test_ingest_skips_serve_order_and_identity_checks_when_not_supplied(
     assert "identified yourself" not in notes
 
 
-def test_ingest_matching_identity_produces_no_identity_note(
-    synthetic_non_pro_xlsx, import_config
-):
+def test_ingest_matching_identity_produces_no_identity_note(synthetic_non_pro_xlsx, import_config):
     pipeline = SwingVisionImportPipeline(import_config)
 
     json_path = pipeline.ingest(
@@ -223,6 +221,40 @@ def test_ingest_reports_excluded_non_match_points_in_import_notes(tmp_path, impo
     record = load_pending(json_path)
 
     assert any("excluded as non-match activity" in note for note in record.import_notes)
+
+
+def test_ingest_folds_a_first_serve_fault_into_its_second_serve_and_says_so(
+    tmp_path, import_config
+):
+    workbook = Workbook()
+    sets_sheet = workbook.active
+    sets_sheet.title = "Sets"
+    sets_sheet.append(["Set", "Host Score", "Guest Score", "Set Winner"])
+    sets_sheet.append([1, 0, 0, "host"])
+    workbook.create_sheet("Games").append(["Game", "Set", "Server", "Game Winner"])
+    workbook.create_sheet("Points").append(
+        ["Point", "Game", "Set", "Match Server", "Point Winner", "Detail"]
+    )
+    shot_rows = [
+        # SwingVision numbers the fault and the second serve as two points.
+        [1, 1, "Test Player", "first_serve", "Serve", "Net", 10.0, "near", "Deuce"],
+        [2, 1, "Test Player", "first_serve", "Serve", "In", 18.0, "near", "deuce"],
+        [2, 2, "Test Opponent", "first_return", "Backhand", "Net", 19.0, "far", "deuce"],
+    ]
+    add_settings_and_shots_sheets(workbook, shot_rows=shot_rows)
+    path = tmp_path / "fault_then_second_serve.xlsx"
+    workbook.save(path)
+
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = pipeline.ingest(path, date="2026-08-06", opponent="Alex", result="W")
+    record = load_pending(json_path)
+
+    points = [p for s in record.sets for p in s.points]
+    assert len(points) == 1
+    assert points[0].first_serve_in is False
+    assert points[0].second_serve_in is True
+    assert points[0].source_point_number == 2
+    assert any("first-serve fault(s) were folded" in note for note in record.import_notes)
 
 
 def test_confirm_point_clears_a_flag_directly_without_an_api_call(
@@ -351,9 +383,7 @@ def test_suggest_raises_without_a_source_file_to_re_parse(import_config):
         pipeline.suggest(_FakeSuggestionClient(), json_path)
 
 
-def test_suggest_skips_direct_parse_points_with_no_shot_provenance(
-    synthetic_xlsx, import_config
-):
+def test_suggest_skips_direct_parse_points_with_no_shot_provenance(synthetic_xlsx, import_config):
     # synthetic_xlsx has real Points-sheet rows, so ingest() takes the
     # direct-parse path - those points have no source_point_number and no
     # raw shots to reason over, so suggest() must leave them alone.
@@ -484,9 +514,7 @@ def test_ingest_multi_part_rejects_fewer_than_two_files(tmp_path, import_config)
     pipeline = SwingVisionImportPipeline(import_config)
 
     with pytest.raises(ValueError, match="at least 2 files"):
-        pipeline.ingest_multi_part(
-            [part1], date="2026-08-18", opponent="Real Opponent", result="W"
-        )
+        pipeline.ingest_multi_part([part1], date="2026-08-18", opponent="Real Opponent", result="W")
 
 
 def test_ingest_multi_part_rejects_files_that_disagree_on_host_name(tmp_path, import_config):
@@ -648,9 +676,7 @@ def test_resolve_parses_review_answers_without_touching_needs_review(
     assert len(client.messages.calls) == 1
 
 
-def test_resolve_works_for_direct_parse_points_with_no_shot_context(
-    synthetic_xlsx, import_config
-):
+def test_resolve_works_for_direct_parse_points_with_no_shot_context(synthetic_xlsx, import_config):
     # synthetic_xlsx takes the direct-parse path - its points have no
     # source_point_number and no raw shots to enrich the prompt with, but
     # resolve() should still work from the review_answer alone.
@@ -892,9 +918,7 @@ def test_suggestions_still_work_once_the_export_is_archived(
 
     record = pipeline.suggest(_FakeSuggestionClient(), json_path)
 
-    annotated = [
-        p for s in record.sets for p in s.points if p.ai_suggested_point_end_type
-    ]
+    annotated = [p for s in record.sets for p in s.points if p.ai_suggested_point_end_type]
     assert annotated, "no suggestions came back after archiving"
 
 
@@ -921,9 +945,7 @@ def test_archiving_a_multi_part_match_keeps_play_order(
         part = tmp_path / name
         part.write_bytes(synthetic_non_pro_xlsx.read_bytes())
         parts.append(part)
-    json_path = pipeline.ingest_multi_part(
-        parts, date="2026-08-06", opponent="Alex", result="W"
-    )
+    json_path = pipeline.ingest_multi_part(parts, date="2026-08-06", opponent="Alex", result="W")
 
     pipeline.archive_sources(json_path)
 
@@ -1127,17 +1149,13 @@ def test_a_second_run_does_not_pay_to_recheck_the_same_points(
         **args,
     )
     second_client = _StubFootageClient([{"confidence": "low"}] * 5)
-    second = pipeline.verify_footage(
-        second_client, json_path, [tmp_path / "video.mp4"], **args
-    )
+    second = pipeline.verify_footage(second_client, json_path, [tmp_path / "video.mp4"], **args)
 
     assert first.checked > 0
     assert second.checked == 0 and second_client.calls == 0
 
 
-def test_the_run_reports_what_it_actually_cost(
-    timed_xlsx, import_config, tmp_path, monkeypatch
-):
+def test_the_run_reports_what_it_actually_cost(timed_xlsx, import_config, tmp_path, monkeypatch):
     pipeline = SwingVisionImportPipeline(import_config)
     json_path = _stage_timed(pipeline, timed_xlsx)
     monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
@@ -1176,9 +1194,7 @@ def test_widespread_server_mismatches_are_called_out(
     assert any("may not line up" in note for note in summary.notes)
 
 
-def test_progress_is_reported_as_points_complete(
-    timed_xlsx, import_config, tmp_path, monkeypatch
-):
+def test_progress_is_reported_as_points_complete(timed_xlsx, import_config, tmp_path, monkeypatch):
     pipeline = SwingVisionImportPipeline(import_config)
     json_path = _stage_timed(pipeline, timed_xlsx)
     monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
@@ -1293,9 +1309,7 @@ class _RetrievalClient:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        text_blocks = [
-            b for b in kwargs["messages"][0]["content"] if b["type"] == "text"
-        ]
+        text_blocks = [b for b in kwargs["messages"][0]["content"] if b["type"] == "text"]
         prompt = " ".join(b["text"] for b in text_blocks)
         if "rally_present" in prompt:
             import json as _json
@@ -1328,9 +1342,7 @@ class _RetrievalClient:
         )
 
 
-def test_condensed_mode_skips_the_alignment_guard(
-    timed_xlsx, import_config, tmp_path, monkeypatch
-):
+def test_condensed_mode_skips_the_alignment_guard(timed_xlsx, import_config, tmp_path, monkeypatch):
     """The guard refuses any video shorter than the shots. In condensed
     mode the video IS too short - that is the whole point. Running it
     at all requires the caller to opt in explicitly via config.source."""
@@ -1417,9 +1429,7 @@ def test_condensed_mode_found_then_judged_can_still_auto_confirm(
     assert summary.not_in_footage == 0
 
 
-def test_ingest_carries_the_rally_count_and_notes_the_coverage_ceiling(
-    timed_xlsx, import_config
-):
+def test_ingest_carries_the_rally_count_and_notes_the_coverage_ceiling(timed_xlsx, import_config):
     pipeline = SwingVisionImportPipeline(import_config)
     baseline = load_pending(_stage_timed(pipeline, timed_xlsx))
     points = sum(len(s.points) for s in baseline.sets)
@@ -1436,15 +1446,13 @@ def test_ingest_carries_the_rally_count_and_notes_the_coverage_ceiling(
     record = load_pending(json_path)
 
     assert record.footage_rally_count == points - 1
-    assert any(
-        f"at most {points - 1} of {points} points" in note for note in record.import_notes
-    )
+    assert any(f"at most {points - 1} of {points} points" in note for note in record.import_notes)
 
 
 def test_the_summary_carries_the_rally_count_beside_the_denominator(
     timed_xlsx, import_config, tmp_path, monkeypatch
 ):
-    """"Of N points played" says what was played; the rally count says how
+    """ "Of N points played" says what was played; the rally count says how
     much of that the footage can show at all. A summary that drops it
     leaves the reviewer to rediscover the ceiling from the misses."""
     pipeline = SwingVisionImportPipeline(import_config)
@@ -1460,3 +1468,77 @@ def test_the_summary_carries_the_rally_count_beside_the_denominator(
 
     assert summary.footage_rally_count == 2
     assert summary.points_played > 0
+
+
+def test_footage_frames_are_taken_on_the_videos_clock_not_the_sheets(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """The real bug: the video ran 2s behind the sheet, so frames "after the
+    last shot" stopped before the rally did."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    def last_shots(offset):
+        seen = []
+
+        def frames(_video, window):
+            seen.append(window.last_shot)
+            return _no_frames(_video, window)
+
+        pipeline.verify_footage(
+            _StubFootageClient([{"confidence": "low"}] * 50),
+            json_path,
+            [tmp_path / "video.mp4"],
+            frame_source=frames,
+            clock_offset=lambda _video, _times: offset,
+        )
+        for set_record in (record := load_pending(json_path)).sets:
+            for point in set_record.points:
+                point.footage_check = None
+        save_pending(record, import_config.pending_dir)
+        return sorted(seen)
+
+    plain = last_shots(footage.ClockOffset(seconds=0.1, strength=12.0, shots=100))
+    shifted = last_shots(footage.ClockOffset(seconds=2.0, strength=12.0, shots=100))
+
+    assert plain
+    assert shifted == [pytest.approx(t + 2.0) for t in plain]
+
+
+def test_an_unconfirmed_clock_is_reported_and_the_sheets_times_are_kept(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([]),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+        clock_offset=lambda _video, _times: footage.ClockOffset(5.0, strength=2.0, shots=100),
+    )
+
+    assert any("could not confirm from the audio" in note for note in summary.notes)
+
+
+def test_the_clock_is_measured_from_the_real_video_by_default(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    asked = []
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+    monkeypatch.setattr(
+        footage, "measure_clock_offset", lambda video, times, exe: asked.append(video.name)
+    )
+    monkeypatch.setattr(footage, "frames_for_point", lambda *a, **k: _no_frames(None, None))
+
+    pipeline.verify_footage(_StubFootageClient([]), json_path, [tmp_path / "video.mp4"])
+
+    assert asked == ["video.mp4"]

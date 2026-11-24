@@ -40,10 +40,11 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import anthropic
+import numpy as np
 
 from ai.client import extract_text
 
@@ -308,6 +309,159 @@ def probe_duration(video: Path, ffmpeg: str | None = None) -> float:
         raise FootageError(f"{video.name}: couldn't read a duration from this file.")
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+@dataclass(frozen=True)
+class ClockOffset:
+    """How far a recording's clock runs behind the sheet's `Video Time`.
+
+    Attributes:
+        seconds: Add this to a `Video Time` to get the moment in the video.
+        strength: How far the best offset stands out from every other
+            offset tried, in standard deviations. A match with no clear
+            peak has nothing to trust.
+        shots: How many shot times the measurement used.
+    """
+
+    seconds: float
+    strength: float
+    shots: int
+
+    @property
+    def trusted(self) -> bool:
+        """Whether the peak is clear enough to shift frames by."""
+        return self.strength >= _MIN_OFFSET_STRENGTH and self.shots >= _MIN_OFFSET_SHOTS
+
+
+# Measured on a real 95-minute recording: the true offset scored 9-13
+# standard deviations above the rest in every sixth of the match.
+_MIN_OFFSET_STRENGTH = 6.0
+_MIN_OFFSET_SHOTS = 20
+_AUDIO_RATE = 8000
+_AUDIO_HOP = 80  # 10 ms
+
+
+def offset_from_audio(
+    samples: np.ndarray,
+    shot_times: list[float],
+    *,
+    sample_rate: int = _AUDIO_RATE,
+    max_lag: float = 6.0,
+) -> ClockOffset | None:
+    """Finds the clock offset that best lines shot times up with ball strikes.
+
+    A ball being struck is a sharp sound. Sliding the sheet's shot times
+    along the recording's audio and scoring how much sudden sound sits
+    under them gives one clear peak at the true offset. Confirmed on a
+    real match: the sheet's times ran 1.99s ahead of the video, the same
+    in every sixth of a 95-minute recording - enough that the frames
+    "around the last shot" ended before the rally did.
+
+    Args:
+        samples: Mono audio samples.
+        shot_times: `Video Time` of each shot, in seconds.
+        sample_rate: Samples per second.
+        max_lag: Largest offset, either way, to consider.
+
+    Returns:
+        The best offset and how clearly it stands out, or None when there
+        is no audio or no shot inside the recording.
+    """
+    hop = max(1, sample_rate // 100)
+    frames = len(samples) // hop
+    if frames < 3 or not shot_times:
+        return None
+    edges = np.diff(samples.astype(np.float32), prepend=np.float32(samples[0]))
+    energy = np.sqrt((edges[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
+    onset = np.maximum(0.0, np.diff(energy, prepend=energy[0]))
+    ceiling = float(np.percentile(onset, 99))
+    if ceiling <= 0:
+        return None
+    onset = np.minimum(onset / ceiling, 3.0)
+    # A strike within 20 ms either side still counts.
+    padded = np.pad(onset, 2)
+    near = np.maximum.reduce([padded[i : i + frames] for i in range(5)])
+
+    index = np.round(np.asarray(shot_times, dtype=np.float64) * 100).astype(np.int64)
+    lags = np.arange(-int(max_lag * 100), int(max_lag * 100) + 1)
+    scores = np.zeros(len(lags))
+    for position, lag in enumerate(lags):
+        at = index + lag
+        at = at[(at >= 0) & (at < frames)]
+        if len(at):
+            scores[position] = near[at].mean()
+    spread = float(scores.std())
+    if spread <= 0:
+        return None
+    best = int(scores.argmax())
+    return ClockOffset(
+        seconds=float(lags[best]) / 100,
+        strength=float((scores[best] - np.median(scores)) / spread),
+        shots=len(shot_times),
+    )
+
+
+def measure_clock_offset(
+    video: Path, shot_times: list[float], ffmpeg: str | None = None
+) -> ClockOffset | None:
+    """Measures a recording's clock offset from its own audio track.
+
+    Free and deterministic: ffmpeg decodes the audio, nothing is sent
+    anywhere. Never raises - a recording with no audio simply cannot be
+    measured, and the caller then uses the sheet's times as they are.
+
+    Args:
+        video: The recording.
+        shot_times: `Video Time` of each shot in that recording.
+        ffmpeg: ffmpeg binary; located automatically if not given.
+
+    Returns:
+        The measured offset, or None if the audio could not be read.
+    """
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg or ffmpeg_exe(),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                str(_AUDIO_RATE),
+                "-f",
+                "s16le",
+                "-",
+            ],
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    samples = np.frombuffer(result.stdout[: len(result.stdout) // 2 * 2], dtype=np.int16)
+    return offset_from_audio(samples, shot_times)
+
+
+def shift_window(window: PointWindow, seconds: float) -> PointWindow:
+    """Moves a point's shot times onto the recording's own clock.
+
+    Args:
+        window: The point's window, in the sheet's `Video Time`.
+        seconds: The recording's measured clock offset.
+
+    Returns:
+        The same window with every time shifted, never below zero.
+    """
+    return replace(
+        window,
+        first_shot=max(0.0, window.first_shot + seconds),
+        prev_shot=None if window.prev_shot is None else max(0.0, window.prev_shot + seconds),
+        last_shot=max(0.0, window.last_shot + seconds),
+    )
 
 
 def extract_frames(

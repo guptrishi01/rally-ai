@@ -40,8 +40,12 @@ class _FakeUsage:
 class _FakeBetaMessages:
     """Stands in for client.beta.messages, which is what footage calls."""
 
-    def __init__(self, response_text: str | None = None, errors: list[Exception] | None = None,
-                 stop_reason: str = "end_turn"):
+    def __init__(
+        self,
+        response_text: str | None = None,
+        errors: list[Exception] | None = None,
+        stop_reason: str = "end_turn",
+    ):
         self.response_text = response_text if response_text is not None else _verdict_json()
         self.errors = list(errors or [])
         self.stop_reason = stop_reason
@@ -432,8 +436,19 @@ def tiny_video(tmp_path):
     exe = footage.ffmpeg_exe()
     path = tmp_path / "clip.mp4"
     subprocess.run(
-        [exe, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-         "-i", "testsrc=size=640x360:rate=30:duration=6", "-pix_fmt", "yuv420p", str(path)],
+        [
+            exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=640x360:rate=30:duration=6",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
         check=True,
         capture_output=True,
     )
@@ -686,3 +701,107 @@ def test_actual_cost_prices_each_model_at_its_own_rate(model, expected):
     was silently billed at Opus 5's rate - a reported cost that was wrong
     while looking exact."""
     assert footage.actual_cost(1_000_000, 100_000, model) == expected
+
+
+def _clicks(times: list[float], seconds: float, rate: int = 8000):
+    """Quiet noise with one sharp click per strike time."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    samples = rng.normal(0, 20, int(seconds * rate)).astype(np.int16)
+    for moment in times:
+        start = int(moment * rate)
+        samples[start : start + 40] = 20000
+    return samples
+
+
+def test_offset_from_audio_finds_how_far_the_video_runs_behind_the_sheet():
+    sheet_times = [3.0 + 2.37 * n + (0.4 if n % 3 else 0.0) for n in range(40)]
+    audio = _clicks([t + 1.99 for t in sheet_times], seconds=110)
+
+    offset = footage.offset_from_audio(audio, sheet_times)
+
+    assert offset.seconds == pytest.approx(1.99, abs=0.03)
+    assert offset.shots == 40
+    assert offset.trusted
+
+
+def test_offset_from_audio_does_not_trust_audio_with_no_strikes_in_it():
+    sheet_times = [3.0 + 2.37 * n for n in range(40)]
+    audio = _clicks([], seconds=110)
+
+    offset = footage.offset_from_audio(audio, sheet_times)
+
+    assert offset is None or not offset.trusted
+
+
+def test_offset_from_audio_needs_audio_and_shots():
+    import numpy as np
+
+    assert footage.offset_from_audio(np.zeros(10, dtype=np.int16), [1.0]) is None
+    assert footage.offset_from_audio(_clicks([1.0], seconds=5), []) is None
+    assert footage.offset_from_audio(np.zeros(80000, dtype=np.int16), [1.0, 2.0]) is None
+
+
+def test_offset_from_audio_returns_nothing_when_every_offset_scores_the_same():
+    import numpy as np
+
+    # A steady ramp has the same onset everywhere, so no offset stands out.
+    ramp = (np.arange(80000) % 30000).astype(np.int16)
+    assert footage.offset_from_audio(ramp, [100.0, 200.0]) is None
+
+
+def test_a_weak_or_thin_offset_is_not_trusted():
+    assert footage.ClockOffset(seconds=2.0, strength=12.0, shots=100).trusted
+    assert not footage.ClockOffset(seconds=2.0, strength=3.0, shots=100).trusted
+    assert not footage.ClockOffset(seconds=2.0, strength=12.0, shots=5).trusted
+
+
+def test_shift_window_moves_every_time_and_never_goes_negative():
+    window = footage.PointWindow(
+        part=0,
+        first_shot=1.0,
+        prev_shot=4.0,
+        last_shot=6.0,
+        tracked_serving=True,
+        tracked_side="near",
+        shot_count=3,
+    )
+
+    later = footage.shift_window(window, 2.0)
+    earlier = footage.shift_window(footage.shift_window(window, -3.0), 0.0)
+
+    assert (later.first_shot, later.prev_shot, later.last_shot) == (3.0, 6.0, 8.0)
+    assert (earlier.first_shot, earlier.prev_shot, earlier.last_shot) == (0.0, 1.0, 3.0)
+    assert (
+        footage.shift_window(footage.PointWindow(0, 1.0, None, 1.0, True, None, 1), 2.0).prev_shot
+        is None
+    )
+
+
+def test_measure_clock_offset_reads_the_audio_through_ffmpeg(monkeypatch, tmp_path):
+    sheet_times = [3.0 + 2.37 * n + (0.4 if n % 3 else 0.0) for n in range(40)]
+    audio = _clicks([t + 0.5 for t in sheet_times], seconds=110)
+
+    def fake_run(command, **kwargs):
+        assert "-vn" in command
+        return subprocess.CompletedProcess(command, 0, stdout=audio.tobytes() + b"\x00")
+
+    monkeypatch.setattr(footage.subprocess, "run", fake_run)
+
+    offset = footage.measure_clock_offset(tmp_path / "match.mp4", sheet_times, "ffmpeg")
+
+    assert offset.seconds == pytest.approx(0.5, abs=0.03)
+
+
+def test_measure_clock_offset_gives_up_quietly_when_the_audio_cannot_be_read(monkeypatch, tmp_path):
+    def no_audio(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout=b"")
+
+    def no_binary(command, **kwargs):
+        raise OSError("no ffmpeg")
+
+    monkeypatch.setattr(footage.subprocess, "run", no_audio)
+    assert footage.measure_clock_offset(tmp_path / "silent.mp4", [1.0], "ffmpeg") is None
+    monkeypatch.setattr(footage.subprocess, "run", no_binary)
+    assert footage.measure_clock_offset(tmp_path / "silent.mp4", [1.0], "ffmpeg") is None

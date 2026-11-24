@@ -286,6 +286,13 @@ class SwingVisionImportPipeline:
                     f"and were skipped (likely a recording gap): "
                     f"{reconstruction.skipped_points}"
                 )
+            if reconstruction.merged_fault_points:
+                notes.append(
+                    f"{len(reconstruction.merged_fault_points)} first-serve fault(s) were "
+                    "folded into the second serve that followed instead of being scored as "
+                    "points of their own (same server, same side, first serve not in): "
+                    f"point(s) {reconstruction.merged_fault_points}"
+                )
             if reconstruction.excluded_points:
                 notes.append(
                     f"{len(reconstruction.excluded_points)} point(s) were excluded as "
@@ -482,6 +489,7 @@ class SwingVisionImportPipeline:
         footage_config: footage.FootageConfig | None = None,
         progress: Callable[[footage.FootageRunSummary], None] | None = None,
         frame_source: Callable[[Path, footage.PointWindow], list[footage.Frame]] | None = None,
+        clock_offset: Callable[[Path, list[float]], footage.ClockOffset | None] | None = None,
     ) -> footage.FootageRunSummary:
         """Checks flagged points against the footage, auto-confirming agreement.
 
@@ -508,6 +516,10 @@ class SwingVisionImportPipeline:
                 a UI can poll one.
             frame_source: Override for frame extraction, so tests can drive
                 the whole flow without a video file.
+            clock_offset: Override for measuring how far each recording's
+                clock runs behind the sheet's (footage.measure_clock_offset
+                by default). Not measured at all when `frame_source` is
+                given and this is not, since there is then no real video.
 
         Returns:
             What the run did, including real token usage and cost.
@@ -548,6 +560,45 @@ class SwingVisionImportPipeline:
         if config.source != "condensed_rallies":
             footage.check_alignment(latest_by_part, durations)
 
+        # The sheet's clock and the recording's are not guaranteed to share
+        # a zero. Measured on a real match the video ran 1.99s behind, so
+        # the frames "after the last shot" stopped before the rally did and
+        # every verdict came back inconclusive. Ball strikes are audible,
+        # which makes the offset measurable for free before anything is
+        # spent. Full-length footage only: the rallies-only export has no
+        # single offset to find.
+        offset_notes: list[str] = []
+        measure = clock_offset
+        if measure is None and frame_source is None:
+            measure = lambda video, times: footage.measure_clock_offset(video, times, exe)  # noqa: E731
+        if measure is not None and config.source != "condensed_rallies":
+            for part, video in enumerate(videos):
+                times = [
+                    shot.video_time
+                    for shots in shots_by_point.values()
+                    for shot in shots
+                    if shot.source_part == part and shot.video_time is not None
+                ]
+                found = measure(video, times)
+                if found is None or not found.trusted:
+                    offset_notes.append(
+                        f"{video.name}: could not confirm from the audio that the "
+                        "footage and the sheet share a clock, so the sheet's times "
+                        "were used as they are."
+                    )
+                    continue
+                if abs(found.seconds) < 0.25:
+                    continue
+                for source_point, window in windows.items():
+                    if window.part == part:
+                        windows[source_point] = footage.shift_window(window, found.seconds)
+                logger.info(
+                    "%s runs %+.2fs from the sheet's clock (strength %.1f); frames shifted",
+                    video.name,
+                    found.seconds,
+                    found.strength,
+                )
+
         targets = [
             (set_record, point)
             for set_record in record.sets
@@ -571,6 +622,7 @@ class SwingVisionImportPipeline:
             points_played=points_played,
             footage_rally_count=record.footage_rally_count,
         )
+        summary.notes.extend(offset_notes)
         if not targets:
             return summary
 

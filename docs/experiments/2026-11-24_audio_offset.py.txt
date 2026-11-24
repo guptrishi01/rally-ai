@@ -1,0 +1,30 @@
+import sys, logging
+import numpy as np
+sys.path.insert(0,"src"); sys.path.insert(0,"."); logging.disable(logging.CRITICAL)
+from pathlib import Path
+from swingvision_import.config import ImportConfig
+from swingvision_import.parse import SwingVisionParser
+a=np.fromfile(sys.argv[1],dtype=np.int16).astype(np.float32)
+SR=8000; HOP=80  # 10 ms
+# high-frequency energy onset envelope
+d=np.diff(a,prepend=a[0])
+n=len(d)//HOP
+e=np.sqrt((d[:n*HOP].reshape(n,HOP)**2).mean(1))
+on=np.maximum(0,e-np.concatenate([[0],e[:-1]]))
+on/= (np.percentile(on,99)+1e-9); on=np.minimum(on,3)
+raw=SwingVisionParser(ImportConfig()).parse(Path("SwingVision-match-2026-08-21 at 13.14.26.xlsx"))
+t=np.array([s.video_time for s in raw.shots if s.video_time is not None])
+lags=np.arange(-600,601)  # +/-6 s in 10 ms
+def score(times):
+    idx=(times*100).astype(int)
+    out=[]
+    for L in lags:
+        j=idx+L; j=j[(j>=2)&(j<n-2)]
+        out.append(np.maximum.reduce([on[j-2],on[j-1],on[j],on[j+1],on[j+2]]).mean())
+    return np.array(out)
+sc=score(t); best=lags[sc.argmax()]/100
+z=(sc.max()-np.median(sc))/ (sc.std()+1e-9)
+print(f"all {len(t)} shots: best offset {best:+.2f}s, peak z {z:.1f}; runner-up outside +/-0.3s: {lags[np.argsort(sc)[::-1]][:8]/100}")
+for k in range(6):
+    seg=t[(t>=k*950)&(t<(k+1)*950)]
+    s=score(seg); print(f"  {k*950:5d}-{(k+1)*950:5d}s  n={len(seg):3d}  offset {lags[s.argmax()]/100:+.2f}s  z {(s.max()-np.median(s))/(s.std()+1e-9):.1f}")

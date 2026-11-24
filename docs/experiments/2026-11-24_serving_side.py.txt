@@ -1,0 +1,74 @@
+import openpyxl, sys, logging
+from collections import defaultdict
+from itertools import groupby
+sys.path.insert(0,"src"); sys.path.insert(0,"."); logging.disable(logging.CRITICAL)
+from pathlib import Path
+from swingvision_import.config import ImportConfig
+from swingvision_import.parse import SwingVisionParser
+from swingvision_import import reconstruct
+X="SwingVision-match-2026-08-21 at 13.14.26.xlsx"
+wb=openpyxl.load_workbook(X,read_only=True,data_only=True)
+rows=list(wb["Shots"].iter_rows(values_only=True)); ix={n:i for i,n in enumerate(rows[0])}
+zone={}
+for r in rows[1:]:
+    if r[ix["Type"]] in ("first_serve","second_serve"): zone.setdefault(r[ix["Point"]], r[ix["Hit Zone"]])
+raw=SwingVisionParser(ImportConfig()).parse(Path(X)); host=raw.settings.host_name
+by=reconstruct.group_shots_by_point(raw.shots)
+keys=[k for k in sorted(by) if reconstruct._has_rally_shot(by[k]) and k in zone]
+def units(rule):
+    out=[]
+    for k in keys:
+        v=by[k]; srv=v[0]
+        if out:
+            pk=out[-1][-1]; pv=by[pk]; ps=pv[0]
+            same = ps.player==srv.player and zone[pk]==zone[k]
+            if same and (rule=="all" or ps.result!="In" or (rule=="short" and len(pv)<=2)):
+                out[-1].append(k); continue
+        out.append([k])
+    return out
+def score(us):
+    pts=[reconstruct.reconstruct_point(u[-1], by[u[-1]], host) for u in us]
+    sets=reconstruct.assign_game_set_boundaries(pts)
+    res=[]
+    for s in sets:
+        res.append(f"{getattr(s,'games_won',None)}-{getattr(s,'games_lost',None)}")
+    return res, sets
+for rule in ("none","fault","short","all"):
+    us=units(rule) if rule!="none" else [[k] for k in keys]
+    res,sets=score(us)
+    runs=[(srv=="Opponent", len(list(g))) for srv,g in groupby(by[u[-1]][0].player for u in us)]
+    # side sanity inside each server run: should alternate starting deuce
+    bad=0; i=0
+    for _,n in runs:
+        z=[zone[us[i+j][-1]] for j in range(n)]; i+=n
+        bad+=sum(z[j]!=("deuce" if j%2==0 else "ad") for j in range(n))
+    print(f"rule={rule}: {len(us)} points; simulated sets {res}; server runs {len(runs)}; side-order violations {bad}")
+    print("   run lengths:", [n for _,n in runs])
+print([a for a in dir(sets[0]) if not a.startswith("_")])
+
+print("---- serve-order boundaries")
+def serve_order(us):
+    pts=[reconstruct.reconstruct_point(u[-1], by[u[-1]], host) for u in us]
+    sets=[]; hg=gg=0; games=[]; i=0; n=len(pts)
+    while i<n:
+        if hg==6 and gg==6:
+            h=g=0; j=i
+            while j<n:
+                h+=pts[j].point_won; g+=not pts[j].point_won; j+=1
+                if max(h,g)>=7 and abs(h-g)>=2: break
+            games.append(("TB",j-i,h,g)); hg+= h>g; gg+= g>h; i=j
+        else:
+            j=i; h=g=0
+            while j<n and pts[j].is_serving==pts[i].is_serving:
+                h+=pts[j].point_won; g+=not pts[j].point_won; j+=1
+            games.append(("S" if pts[i].is_serving else "R",j-i,h,g)); 
+            if h>g: hg+=1
+            elif g>h: gg+=1
+            else: games[-1]+=("TIED",); hg+= pts[j-1].point_won; gg+= not pts[j-1].point_won
+            i=j
+        if (max(hg,gg)>=6 and abs(hg-gg)>=2) or max(hg,gg)==7:
+            sets.append((hg,gg)); hg=gg=0
+    if hg or gg: sets.append((hg,gg,"partial"))
+    return sets,games
+for rule in ("fault","short","all"):
+    s,g=serve_order(units(rule)); print(rule,s); print("  ",g)

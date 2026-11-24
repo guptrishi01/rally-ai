@@ -20,7 +20,7 @@ is exactly why nothing from this module is ever trusted un-reviewed.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from .raw import RawShotRow
 from .records import PointRecord, SetRecord
@@ -170,8 +170,51 @@ def _coarse_end_type(
     return "winner" if point_won else "unforced_error"
 
 
+def is_second_serve_attempt(previous: list[RawShotRow], current: list[RawShotRow]) -> bool:
+    """Whether `current` is the second serve of the point `previous` began.
+
+    SwingVision's `Point` counter restarts at every serve *attempt*, so a
+    first-serve fault and the second serve that follows arrive as two
+    separate "points". Measured on a real export: scoring the fault as its
+    own point added 42 phantom points to a 132-point match.
+
+    The serve's own `first_serve`/`second_serve` label is not enough to
+    tell them apart - in that export 17 fault-then-second-serve pairs were
+    both labelled `first_serve`. The serving side is: a server only serves
+    twice running from the same side when the first serve was a fault. The
+    label is used only when the side is not recorded.
+
+    Args:
+        previous: The preceding serve attempt's shots, in order.
+        current: This serve attempt's shots, in order.
+
+    Returns:
+        True if both attempts are the same server's, from the same export,
+        struck from the same serving side, and the first serve either did
+        not land in or is followed by a serve SwingVision itself labelled
+        `second_serve`. When a side is missing, the label and a first
+        serve that did not land in are both required.
+    """
+    first = next((s for s in previous if s.shot_type in _SERVE_TYPES), None)
+    second = next((s for s in current if s.shot_type in _SERVE_TYPES), None)
+    if first is None or second is None:
+        return False
+    if first.player != second.player or first.source_part != second.source_part:
+        return False
+    labelled = first.shot_type == "first_serve" and second.shot_type == "second_serve"
+    if first.hit_zone and second.hit_zone:
+        # SwingVision calling the next serve a second serve outweighs its
+        # own "In" on the first: both cannot be right, and the side agrees.
+        return first.hit_zone == second.hit_zone and (first.result != "In" or labelled)
+    return labelled and first.result != "In"
+
+
 def reconstruct_point(
-    point_number: int, shots: list[RawShotRow], host_name: str
+    point_number: int,
+    shots: list[RawShotRow],
+    host_name: str,
+    *,
+    faulted_serve: RawShotRow | None = None,
 ) -> ReconstructedPoint | None:
     """Derives one point's facts from its shot sequence.
 
@@ -185,6 +228,10 @@ def reconstruct_point(
             to tell which side hit each shot (Shots' own Player column is
             a display name, not a "host"/"guest" token like Sets/Games/
             Points use).
+        faulted_serve: The first-serve fault that preceded these shots
+            under its own point number (see is_second_serve_attempt), if
+            any. When given, the serve in `shots` is this point's second
+            serve whatever its own label says.
 
     Returns:
         The reconstructed point, or None if `shots` is empty (a gap).
@@ -195,9 +242,18 @@ def reconstruct_point(
     serve_shot = next((s for s in shots if s.shot_type in _SERVE_TYPES), None)
     is_serving = serve_shot is not None and serve_shot.player == host_name
 
-    first_serve_shot = next((s for s in shots if s.shot_type == "first_serve"), None)
-    second_serve_shot = next((s for s in shots if s.shot_type == "second_serve"), None)
-    first_serve_in = first_serve_shot.result == "In" if first_serve_shot else None
+    if faulted_serve is not None:
+        first_serve_shot: RawShotRow | None = faulted_serve
+        second_serve_shot = serve_shot
+    else:
+        first_serve_shot = next((s for s in shots if s.shot_type == "first_serve"), None)
+        second_serve_shot = next((s for s in shots if s.shot_type == "second_serve"), None)
+    # A serve that was followed by a second serve was a fault, whatever
+    # its own Result cell says.
+    if faulted_serve is not None:
+        first_serve_in: bool | None = False
+    else:
+        first_serve_in = first_serve_shot.result == "In" if first_serve_shot else None
     second_serve_in = second_serve_shot.result == "In" if second_serve_shot else None
 
     last_shot = shots[-1]
@@ -388,12 +444,18 @@ class ReconstructionResult:
             assignment (still carrying their original match-wide
             point_number) — kept here so build_shot_pattern_summary can be
             called against them without re-deriving anything.
+        merged_fault_points: Match-wide point numbers that were a
+            first-serve fault and were folded into the point that
+            followed (its second serve) rather than scored as points of
+            their own. Reported, like the two lists above, so the count
+            of points never changes silently.
     """
 
     sets: list[SetRecord]
     skipped_points: list[int]
     excluded_points: list[int]
     points: list[ReconstructedPoint]
+    merged_fault_points: list[int] = field(default_factory=list)
 
 
 def _has_rally_shot(shots: list[RawShotRow]) -> bool:
@@ -427,6 +489,10 @@ def reconstruct_all(
     points: list[ReconstructedPoint] = []
     skipped: list[int] = []
     excluded: list[int] = []
+    merged_faults: list[int] = []
+    # The previous serve attempt, held back one step: it only becomes a
+    # point once the next attempt turns out not to be its second serve.
+    pending: tuple[int, list[RawShotRow]] | None = None
     if grouped:
         # A gap point number has zero shots, so it never becomes a key in
         # `grouped` at all - iterating its keys would silently skip past
@@ -437,9 +503,19 @@ def reconstruct_all(
                 skipped.append(point_number)
             elif not _has_rally_shot(point_shots):
                 excluded.append(point_number)
+            elif pending is not None and is_second_serve_attempt(pending[1], point_shots):
+                fault = next(s for s in pending[1] if s.shot_type in _SERVE_TYPES)
+                merged_faults.append(pending[0])
+                points.append(
+                    reconstruct_point(point_number, point_shots, host_name, faulted_serve=fault)
+                )
+                pending = None
             else:
-                reconstructed = reconstruct_point(point_number, point_shots, host_name)
-                points.append(reconstructed)
+                if pending is not None:
+                    points.append(reconstruct_point(pending[0], pending[1], host_name))
+                pending = (point_number, point_shots)
+        if pending is not None:
+            points.append(reconstruct_point(pending[0], pending[1], host_name))
 
     if skipped:
         logger.warning(
@@ -455,9 +531,20 @@ def reconstruct_all(
             excluded,
         )
 
+    if merged_faults:
+        logger.info(
+            "Folded %d first-serve fault(s) into the second serve that followed: %s",
+            len(merged_faults),
+            merged_faults,
+        )
+
     sets = assign_game_set_boundaries(points, ad_scoring=ad_scoring)
     return ReconstructionResult(
-        sets=sets, skipped_points=skipped, excluded_points=excluded, points=points
+        sets=sets,
+        skipped_points=skipped,
+        excluded_points=excluded,
+        points=points,
+        merged_fault_points=merged_faults,
     )
 
 
