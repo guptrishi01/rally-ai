@@ -634,18 +634,41 @@ class SwingVisionImportPipeline:
         host_name = self._host_name(record)
         condensed = config.source == "condensed_rallies"
 
-        def check_full(point) -> footage.FootageVerdict:
+        def check_full(
+            point,
+        ) -> tuple[footage.FootageVerdict, footage.FootageVerdict | None]:
+            """Reads the point, and reads it again where that could settle it.
+
+            The second reading gets the stills without the ball-path image,
+            so the two are judged from different evidence. It is only
+            taken when there is a ball-path image to leave out and
+            footage.wants_second_reading says it could change the result.
+            """
             window = windows[point.source_point_number]
             frames = extract(videos[window.part], window)
-            return footage.judge_point(
-                client,
-                config,
-                window,
-                frames,
-                record.reviewer_note,
-                switch,
-                player_appearance=record.player_appearance,
-            )
+
+            def read(these) -> footage.FootageVerdict:
+                return footage.judge_point(
+                    client,
+                    config,
+                    window,
+                    these,
+                    record.reviewer_note,
+                    switch,
+                    player_appearance=record.player_appearance,
+                )
+
+            first = read(frames)
+            stills = [frame for frame in frames if frame.caption is None]
+            if (
+                not config.corroborate
+                or len(stills) == len(frames)
+                or not footage.wants_second_reading(
+                    first, point, window, config.corroboration_confidence
+                )
+            ):
+                return first, None
+            return first, read(stills)
 
         def check_condensed(
             point,
@@ -790,10 +813,21 @@ class SwingVisionImportPipeline:
                             if progress is not None:
                                 progress(summary)
                             continue
+                        second = None
                     else:
-                        verdict = result
-                    outcome = footage.compare(verdict, point, window)
-                    self._apply_verdict(point, verdict, outcome)
+                        verdict, second = result
+                    if second is None:
+                        outcome = footage.compare(verdict, point, window)
+                    else:
+                        outcome = footage.corroborate(
+                            verdict, second, point, window, config.corroboration_confidence
+                        )
+                        summary.second_readings += 1
+                        summary.input_tokens += second.input_tokens
+                        summary.output_tokens += second.output_tokens
+                        if outcome == "agrees":
+                            summary.corroborated += 1
+                    self._apply_verdict(point, verdict, outcome, second)
                     summary.checked += 1
                     summary.input_tokens += verdict.input_tokens
                     summary.output_tokens += verdict.output_tokens
@@ -843,13 +877,22 @@ class SwingVisionImportPipeline:
         return summary
 
     @staticmethod
-    def _apply_verdict(point, verdict: footage.FootageVerdict, outcome: str) -> None:
+    def _apply_verdict(
+        point,
+        verdict: footage.FootageVerdict,
+        outcome: str,
+        second: footage.FootageVerdict | None = None,
+    ) -> None:
         """Records a footage verdict, clearing the flag only on agreement.
 
         Args:
             point: The point that was checked.
-            verdict: What the footage said.
-            outcome: compare()'s answer.
+            verdict: What the footage said (the first reading).
+            outcome: compare()'s answer, or corroborate()'s when there
+                were two readings.
+            second: The second, stills-only reading, if one was taken. It
+                is recorded in full so a reviewer can see what each
+                reading said, not just that they were weighed.
         """
         point.footage_check = {
             "verdict": outcome,
@@ -860,6 +903,13 @@ class SwingVisionImportPipeline:
             "at_net": verdict.tracked_at_net,
             "server_seen": verdict.server_seen,
         }
+        if second is not None:
+            point.footage_check["second_reading"] = {
+                "point_end_type": second.point_end_type,
+                "point_won": second.winner == "tracked",
+                "confidence": second.confidence,
+                "reasoning": second.reasoning,
+            }
         if outcome == "agrees":
             # Nothing is overwritten: the footage agreed with what is
             # already recorded, so only the flag clears.

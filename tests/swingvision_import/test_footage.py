@@ -910,9 +910,91 @@ def test_a_stretch_with_no_ball_path_is_judged_from_the_stills(tiny_video, tmp_p
 
 
 def test_the_estimate_counts_the_ball_path_image():
-    with_path = footage.estimate_cost(10, footage.FootageConfig())
+    with_path = footage.estimate_cost(10, footage.FootageConfig(corroborate=False))
     without = footage.estimate_cost(10, footage.FootageConfig(ball_path=False))
 
     assert with_path.input_tokens_per_point - without.input_tokens_per_point == (
         footage.frame_tokens(1920, 1080) + 260
     )
+
+
+def test_the_estimate_assumes_every_point_needs_its_second_reading():
+    one = footage.estimate_cost(10, footage.FootageConfig(corroborate=False))
+    two = footage.estimate_cost(10, footage.FootageConfig())
+    no_path = footage.estimate_cost(10, footage.FootageConfig(ball_path=False))
+
+    assert two.output_tokens_per_point == 2 * one.output_tokens_per_point
+    assert two.input_tokens_per_point == (
+        one.input_tokens_per_point + no_path.input_tokens_per_point
+    )
+    # Without a ball-path image there is nothing to leave out of a second reading.
+    assert no_path.output_tokens_per_point == one.output_tokens_per_point
+
+
+# ---------------------------------------------------------------------------
+# Two readings deciding together
+# ---------------------------------------------------------------------------
+
+
+def test_two_medium_readings_that_match_the_sheet_agree():
+    first, second = _verdict(confidence="medium"), _verdict(confidence="medium")
+
+    assert footage.compare(first, _point(), _window()) == "inconclusive"
+    assert footage.corroborate(first, second, _point(), _window()) == "agrees"
+
+
+def test_a_guess_does_not_corroborate_unless_the_floor_is_lowered():
+    first, second = _verdict(confidence="medium"), _verdict(confidence="low")
+
+    assert footage.corroborate(first, second, _point(), _window()) == "inconclusive"
+    assert footage.corroborate(first, second, _point(), _window(), "low") == "agrees"
+
+
+def test_two_readings_telling_the_same_different_story_disagree():
+    lost = dict(winner="opponent", point_end_type="unforced_error", confidence="medium")
+
+    outcome = footage.corroborate(_verdict(**lost), _verdict(**lost), _point(), _window())
+
+    assert outcome == "disagrees"
+
+
+def test_readings_that_split_settle_nothing():
+    lost = _verdict(winner="opponent", point_end_type="unforced_error", confidence="medium")
+    forced = _verdict(winner="opponent", point_end_type="forced_error", confidence="medium")
+    won = _verdict(confidence="medium")
+
+    assert footage.corroborate(won, lost, _point(), _window()) == "inconclusive"
+    assert footage.corroborate(lost, forced, _point(), _window()) == "inconclusive"
+
+
+def test_a_second_reading_cannot_rescue_one_that_failed_an_alignment_check():
+    wrong_server = _verdict(confidence="medium", server_seen="opponent")
+
+    outcome = footage.corroborate(
+        _verdict(confidence="medium"), wrong_server, _point(), _window()
+    )
+
+    assert outcome == "inconclusive"
+
+
+_LOST = {"winner": "opponent", "point_end_type": "unforced_error"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "minimum", "wanted"),
+    [
+        ({"confidence": "medium"}, "medium", True),
+        ({"confidence": "medium", **_LOST}, "medium", True),
+        ({"confidence": "high"}, "medium", False),  # decides alone
+        ({"confidence": "low"}, "medium", False),  # below the floor
+        ({"confidence": "low"}, "low", True),
+        ({"confidence": "medium", "usable": False}, "medium", False),
+        ({"confidence": "medium", "server_seen": "opponent"}, "medium", False),
+    ],
+)
+def test_a_second_reading_is_only_taken_where_it_could_change_the_result(
+    overrides, minimum, wanted
+):
+    first = _verdict(**overrides)
+
+    assert footage.wants_second_reading(first, _point(), _window(), minimum) is wanted

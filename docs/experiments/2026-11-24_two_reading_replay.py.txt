@@ -1,0 +1,57 @@
+"""Free replay: run the stored readings of the 10 sample points through the new rule."""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "src")
+sys.path.insert(0, ".")
+from swingvision_import import footage  # noqa: E402
+from swingvision_import.review import load_pending  # noqa: E402
+
+S = Path(sys.argv[1])
+
+
+def readings(path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        p["source_point_number"]: p["footage_check"]
+        for s in data["sets"]
+        for p in s["points"]
+        if p.get("footage_check")
+    }
+
+
+def verdict(check):
+    return footage.FootageVerdict(
+        usable=True,
+        server_seen=check["server_seen"],
+        winner="unclear"
+        if check["point_end_type"] == "unclear"
+        else ("tracked" if check["point_won"] else "opponent"),
+        point_end_type=check["point_end_type"],
+        tracked_at_net=check["at_net"],
+        confidence=check["confidence"],
+        reasoning="",
+    )
+
+
+with_path = readings(S / "fw" / "sample_result.json")
+stills = readings(S / "fw" / "sample2_stills_only_result.json")
+record = load_pending(next((S / "remeasure" / "pending").glob("*.json")))
+points = {p.source_point_number: p for s in record.sets for p in s.points}
+for floor in ("medium", "low"):
+    tally = {"agrees": 0, "disagrees": 0, "inconclusive": 0}
+    seconds = 0
+    for number in sorted(with_path):
+        point = points[number]
+        window = footage.PointWindow(0, 0.0, None, 1.0, point.is_serving, None, 3)
+        first, second = verdict(with_path[number]), verdict(stills[number])
+        if footage.wants_second_reading(first, point, window, floor):
+            seconds += 1
+            outcome = footage.corroborate(first, second, point, window, floor)
+        else:
+            outcome = footage.compare(first, point, window)
+        tally[outcome] += 1
+        print(floor, number, point.point_end_type, "|", first.point_end_type, first.confidence,
+              "|", second.point_end_type, second.confidence, "->", outcome)
+    print(floor, tally, "second readings:", seconds)

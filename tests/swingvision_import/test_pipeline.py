@@ -1542,3 +1542,123 @@ def test_the_clock_is_measured_from_the_real_video_by_default(
     pipeline.verify_footage(_StubFootageClient([]), json_path, [tmp_path / "video.mp4"])
 
     assert asked == ["video.mp4"]
+
+
+# ---------------------------------------------------------------------------
+# Two readings deciding together
+# ---------------------------------------------------------------------------
+
+
+def _stills_and_path(_video, _window):
+    return [
+        footage.Frame("finish", 0.0, b"\xff\xd8jpeg"),
+        footage.Frame("ball path", -0.3, b"\xff\xd8path", "Frame {n} is the path."),
+    ]
+
+
+def _two_readings(
+    pipeline, json_path, tmp_path, monkeypatch, script, frames=_stills_and_path, **config
+):
+    """Runs the check one point at a time, so scripted readings arrive in order."""
+    recorded = [
+        ("tracked" if p.point_won else "opponent", p.point_end_type)
+        for s in load_pending(json_path).sets
+        for p in s.points
+    ]
+    verdicts = [
+        {"winner": winner, "point_end_type": end_type, **reading}
+        for winner, end_type in recorded
+        for reading in script
+    ]
+    client = _StubFootageClient(verdicts)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+    summary = pipeline.verify_footage(
+        client,
+        json_path,
+        [tmp_path / "video.mp4"],
+        footage_config=footage.FootageConfig(workers=1, **config),
+        frame_source=frames,
+    )
+    return summary, client, len(recorded)
+
+
+def test_two_medium_readings_that_match_the_sheet_clear_the_flag(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    script = [{"confidence": "medium"}, {"confidence": "medium", "reasoning": "stills only"}]
+
+    summary, client, points = _two_readings(pipeline, json_path, tmp_path, monkeypatch, script)
+
+    assert client.calls == 2 * points
+    assert summary.agreed == summary.corroborated == summary.second_readings == points
+    assert summary.input_tokens == 2000 * points  # both readings are billed
+    for set_record in load_pending(json_path).sets:
+        for point in set_record.points:
+            assert point.needs_review is False
+            assert point.confirmed_by == "footage"
+            assert point.footage_check["second_reading"]["reasoning"] == "stills only"
+
+
+def test_the_second_reading_is_judged_without_the_ball_path(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    images_per_call = []
+    original = footage.judge_point
+
+    def spy(client, config, window, frames, *args, **kwargs):
+        images_per_call.append([frame.label for frame in frames])
+        return original(client, config, window, frames, *args, **kwargs)
+
+    monkeypatch.setattr(footage, "judge_point", spy)
+    script = [{"confidence": "medium"}, {"confidence": "medium"}]
+
+    _two_readings(pipeline, json_path, tmp_path, monkeypatch, script)
+
+    assert images_per_call[0] == ["finish", "ball path"]
+    assert images_per_call[1] == ["finish"]
+
+
+def test_a_second_reading_that_differs_leaves_the_point_flagged(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    script = [{"confidence": "medium"}, {"confidence": "medium", "point_end_type": "unclear"}]
+
+    summary, _client, points = _two_readings(pipeline, json_path, tmp_path, monkeypatch, script)
+
+    assert summary.agreed == 0
+    assert summary.inconclusive == summary.second_readings == points
+    for set_record in load_pending(json_path).sets:
+        for point in set_record.points:
+            assert point.needs_review is True
+            assert point.footage_check["verdict"] == "inconclusive"
+
+
+@pytest.mark.parametrize(
+    ("script", "frames", "config"),
+    [
+        ([{"confidence": "high"}], _stills_and_path, {}),  # decides alone
+        ([{"confidence": "low"}], _stills_and_path, {}),  # below the floor
+        ([{"confidence": "medium"}], _no_frames, {}),  # nothing to leave out
+        ([{"confidence": "medium"}], _stills_and_path, {"corroborate": False}),
+    ],
+)
+def test_no_second_reading_is_paid_for_where_it_could_not_matter(
+    timed_xlsx, import_config, tmp_path, monkeypatch, script, frames, config
+):
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+
+    summary, client, points = _two_readings(
+        pipeline, json_path, tmp_path, monkeypatch, script, frames, **config
+    )
+
+    assert client.calls == points
+    assert summary.second_readings == 0
+    assert summary.corroborated == 0

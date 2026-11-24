@@ -82,7 +82,10 @@ class PointRecord:
             None if it hasn't been checked. A plain dict so it survives
             to_dict/from_dict untouched, with keys: verdict ("agrees",
             "disagrees", "inconclusive"), point_end_type, point_won,
-            confidence, reasoning, at_net, server_seen. A "disagrees"
+            confidence, reasoning, at_net, server_seen, and - when the
+            first reading was not confident enough to stand alone -
+            second_reading (the stills-only reading's point_end_type,
+            point_won, confidence, reasoning). A "disagrees"
             verdict never overwrites anything - it is context for the human,
             exactly like ai_suggested_point_end_type.
         source_point_number: The original SwingVision match-wide "Point"

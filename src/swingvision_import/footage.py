@@ -112,6 +112,14 @@ class FootageConfig:
         ball_path_width: Pixel width of the composite. Wider than the
             stills on purpose - a far-court ball is a few pixels across
             and the path is the one thing this image is for.
+        corroborate: When the first reading falls short of high
+            confidence, take a second reading from different evidence (the
+            stills without the ball-path image) and let the two together
+            decide - see corroborate(). Needs `ball_path`, since without
+            it a second reading would only repeat the first.
+        corroboration_confidence: The least confidence either reading may
+            have for the pair to count: "medium" or "low". "low" is what
+            the prompt calls a guess, so it is not the default.
         workers: Points checked concurrently. Kept below suggestion
             workers because each request carries ~10 large images, which
             reaches input-token rate limits sooner.
@@ -156,6 +164,8 @@ class FootageConfig:
     ball_path_before: float = 0.3
     ball_path_after: float = 3.0
     ball_path_width: int = 1920
+    corroborate: bool = True
+    corroboration_confidence: str = "medium"
     workers: int = 4
     max_attempts: int = 4
     retry_base_delay: float = 2.0
@@ -1197,8 +1207,9 @@ def judge_point(
 def compare(verdict: FootageVerdict, point: PointRecord, window: PointWindow) -> str:
     """Decides whether the footage corroborates the recorded outcome.
 
-    "agrees" is deliberately hard to reach: the verdict must be usable and
-    high-confidence, must have seen the same server the spreadsheet
+    This is the rule for one reading standing alone; corroborate() is the
+    rule for two. "agrees" is deliberately hard to reach: the verdict must
+    be usable and high-confidence, must have seen the same server the spreadsheet
     recorded (otherwise the frames may be from another point), must have
     found the tracked player at the end the sheet puts them (when their
     appearance was described), must be internally consistent, must not
@@ -1213,7 +1224,108 @@ def compare(verdict: FootageVerdict, point: PointRecord, window: PointWindow) ->
     Returns:
         "agrees", "disagrees", or "inconclusive".
     """
-    if verdict.refused or not verdict.usable or verdict.confidence != "high":
+    if verdict.confidence != "high":
+        return "inconclusive"
+    return _reading(verdict, point, window)
+
+
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _confident_enough(verdict: FootageVerdict, minimum: str) -> bool:
+    """Whether a reading's own confidence reaches `minimum`."""
+    return _CONFIDENCE_RANK.get(verdict.confidence, 0) >= _CONFIDENCE_RANK.get(minimum, 1)
+
+
+def wants_second_reading(
+    first: FootageVerdict, point: PointRecord, window: PointWindow, minimum: str = "medium"
+) -> bool:
+    """Whether a second reading could change what happens to this point.
+
+    Not when the first is already high-confidence (it decides alone), not
+    when it is below the floor (no pair including it can count), and not
+    when it is unreadable or failed an alignment check (a second look at
+    the wrong rally settles nothing). So the second call is only paid for
+    where it can clear a flag or confirm a disagreement.
+
+    Args:
+        first: The first reading.
+        point: The reconstructed point as currently recorded.
+        window: The point's window.
+        minimum: The corroboration floor, "medium" or "low".
+
+    Returns:
+        True if a second reading is worth taking.
+    """
+    if first.confidence == "high" or not _confident_enough(first, minimum):
+        return False
+    return _reading(first, point, window) != "inconclusive"
+
+
+def corroborate(
+    first: FootageVerdict,
+    second: FootageVerdict,
+    point: PointRecord,
+    window: PointWindow,
+    minimum: str = "medium",
+) -> str:
+    """Decides a point from two readings that were given different evidence.
+
+    Measured on a real recording, no single reading reached high
+    confidence: most points turn on a line call at the far baseline, which
+    one camera behind the near baseline does not settle. What a single
+    reading cannot supply, agreement can - so a flag also clears when
+    three things line up: the sheet's reconstruction, a reading from the
+    stills plus the ball-path image, and a reading from the stills alone.
+
+    This is deliberately not as independent as it sounds, and the limit is
+    stated rather than hidden: both readings come from the same model and
+    the same video, so a blind spot they share would fool both. The sheet
+    is the genuinely independent third. Each reading must still pass every
+    check compare() makes except the high-confidence one, and neither may
+    fall below `minimum`.
+
+    Two readings that agree with each other *against* the sheet come back
+    "disagrees": the point stays flagged with both attached, and nothing
+    is overwritten.
+
+    Args:
+        first: The reading that saw the ball-path image.
+        second: The reading from the stills alone.
+        point: The reconstructed point as currently recorded.
+        window: The point's window.
+        minimum: The least confidence either reading may have.
+
+    Returns:
+        "agrees", "disagrees", or "inconclusive".
+    """
+    if not (_confident_enough(first, minimum) and _confident_enough(second, minimum)):
+        return "inconclusive"
+    outcomes = (_reading(first, point, window), _reading(second, point, window))
+    if outcomes == ("agrees", "agrees"):
+        return "agrees"
+    same_story = (first.winner, first.point_end_type) == (second.winner, second.point_end_type)
+    if outcomes == ("disagrees", "disagrees") and same_story:
+        return "disagrees"
+    return "inconclusive"
+
+
+def _reading(verdict: FootageVerdict, point: PointRecord, window: PointWindow) -> str:
+    """Whether one reading matches the recorded outcome, confidence aside.
+
+    Every check compare() describes except the confidence bar, which the
+    callers apply: compare() demands high of a reading standing alone, and
+    corroborate() accepts less of two that agree.
+
+    Args:
+        verdict: The footage verdict.
+        point: The reconstructed point as currently recorded.
+        window: The point's window (for who served).
+
+    Returns:
+        "agrees", "disagrees", or "inconclusive".
+    """
+    if verdict.refused or not verdict.usable:
         return "inconclusive"
     if "unclear" in (verdict.winner, verdict.point_end_type):
         return "inconclusive"
@@ -1599,7 +1711,9 @@ def estimate_cost(points: int, config: FootageConfig, aspect: float = 16 / 9) ->
     """Estimates what checking `points` points will cost.
 
     Assumes the most frames a point can get (serve + previous shot +
-    finish); single-shot points use fewer, so this errs high.
+    finish) and, with corroboration on, that every point needs its second
+    reading; single-shot points use fewer frames and a confident or
+    unreadable first reading takes no second, so this errs high.
 
     Args:
         points: How many points would be checked.
@@ -1616,14 +1730,19 @@ def estimate_cost(points: int, config: FootageConfig, aspect: float = 16 / 9) ->
     if config.ball_path:
         path_height = math.ceil(config.ball_path_width / aspect / 2) * 2
         input_per_point += frame_tokens(config.ball_path_width, path_height) + 260
+    output_per_point = config.estimated_output_tokens
+    if config.ball_path and config.corroborate:
+        # Worst case: every point gets the second, stills-only reading.
+        input_per_point += frames * per_frame + frames * 12 + 1100
+        output_per_point *= 2
     in_price, out_price = _PRICES.get(config.model, _PRICES["claude-opus-5"])
     usd = points * (
-        input_per_point * in_price + config.estimated_output_tokens * out_price
+        input_per_point * in_price + output_per_point * out_price
     ) / 1_000_000
     return CostEstimate(
         points=points,
         input_tokens_per_point=input_per_point,
-        output_tokens_per_point=config.estimated_output_tokens,
+        output_tokens_per_point=output_per_point,
         usd=round(usd, 2),
         model=config.model,
     )
@@ -1683,6 +1802,8 @@ class FootageRunSummary:
     footage_rally_count: int | None = None
     checked: int = 0
     agreed: int = 0
+    corroborated: int = 0
+    second_readings: int = 0
     disagreed: int = 0
     inconclusive: int = 0
     not_in_footage: int = 0

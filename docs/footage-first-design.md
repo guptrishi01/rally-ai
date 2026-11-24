@@ -151,6 +151,25 @@ agreement between readings that were given different evidence. That is the
 rule change in section 3, and it is still waiting on a yes. Ten points
 remains a small sample.
 
+## 0e. The rule was changed (2026-11-24) - partly
+
+Decided by the user after 0d. Built as `footage.corroborate`: a flag
+clears when the sheet, a reading from stills plus ball path, and a reading
+from stills alone all agree, with neither reading below medium. This is
+the *corroboration* half of section 3. The *override* half - two footage
+readings outvoting the sheet - is not built: readings that agree against
+the sheet are recorded as a disagreement and the point stays flagged.
+
+Replaying the stored readings from 0c and 0d through the rule (free):
+
+| Floor | Cleared | Disagree with sheet | Still open | Second readings |
+|---|---|---|---|---|
+| medium (default) | 2 (180, 202) | 1 (26) | 7 | 6 |
+| low | 5 | 2 (26, 93) | 3 | 10 |
+
+The "all three agree on 5" figure in 0d counted low-confidence readings.
+At the medium floor it is 2.
+
 ## 1. Two facts that change the plan
 
 **The API does not take video.** The earlier plan said "short video clips,
