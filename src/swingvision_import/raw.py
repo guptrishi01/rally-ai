@@ -157,6 +157,19 @@ class RawShotRow:
             part's video_time is relative to *that part's own* recording,
             so this is what says which video a timestamp belongs to. 0 for
             a single-file match.
+        bounce_x: Where the ball landed, in court-plane coordinates
+            ("Bounce (x)"). The sign/units are SwingVision's own court
+            frame; the independent tracker (see docs) emits the same thing
+            from a homography. None when the column is absent.
+        bounce_y: The ball's landing position down the court
+            ("Bounce (y)"). None when absent.
+        hit_x: Where the ball was struck, in court-plane coordinates
+            ("Hit (x)"). None when absent.
+        hit_y: The strike position down the court ("Hit (y)"). None when
+            absent.
+        direction: Which way the shot was sent ("Direction"), e.g.
+            "cross"/"line" - normalized to a lowercase string. None when
+            absent.
     """
 
     point_number: int
@@ -175,6 +188,15 @@ class RawShotRow:
     # them (older exports or sheets where they are blank).
     spin: str | None = None
     speed_mph: float | None = None
+    # Court-plane coordinates. Present in the real Shots sheet but dropped
+    # by older imports; parsed now so a court-real placement heatmap is
+    # possible, and so the independent tracker has a place to emit the
+    # same values. All optional - nothing downstream requires them yet.
+    bounce_x: float | None = None
+    bounce_y: float | None = None
+    hit_x: float | None = None
+    hit_y: float | None = None
+    direction: str | None = None
 
 
 @dataclass

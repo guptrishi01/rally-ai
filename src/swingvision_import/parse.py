@@ -23,7 +23,20 @@ _OPTIONAL_FIELDS: dict[str, frozenset[str]] = {
     "points": frozenset({"first_serve_in", "second_serve_in"}),
     # Only footage verification needs these; an older or trimmed export
     # without them still imports exactly as before.
-    "shots": frozenset({"video_time", "hit_side", "hit_zone", "spin", "speed_mph"}),
+    "shots": frozenset(
+        {
+            "video_time",
+            "hit_side",
+            "hit_zone",
+            "spin",
+            "speed_mph",
+            "bounce_x",
+            "bounce_y",
+            "hit_x",
+            "hit_y",
+            "direction",
+        }
+    ),
 }
 
 
@@ -302,6 +315,7 @@ class SwingVisionParser:
             spin_cell = _cell(row, columns, "spin")
             speed_cell = _cell(row, columns, "speed_mph")
             zone_cell = _cell(row, columns, "hit_zone")
+            direction_cell = _cell(row, columns, "direction")
             shots.append(
                 RawShotRow(
                     point_number=int(_cell(row, columns, "point_number")),
@@ -315,6 +329,15 @@ class SwingVisionParser:
                     hit_zone=str(zone_cell).strip().lower() if zone_cell is not None else None,
                     spin=str(spin_cell) if spin_cell is not None else None,
                     speed_mph=_as_float(speed_cell),
+                    bounce_x=_as_float(_cell(row, columns, "bounce_x")),
+                    bounce_y=_as_float(_cell(row, columns, "bounce_y")),
+                    hit_x=_as_float(_cell(row, columns, "hit_x")),
+                    hit_y=_as_float(_cell(row, columns, "hit_y")),
+                    direction=(
+                        str(direction_cell).strip().lower()
+                        if direction_cell is not None and str(direction_cell).strip() != ""
+                        else None
+                    ),
                 )
             )
         return shots

@@ -70,6 +70,11 @@ DEFAULT_COLUMN_ALIASES: dict[str, dict[str, list[str]]] = {
         "hit_zone": ["Hit Zone"],
         "spin": ["Spin"],
         "speed_mph": ["Speed (MPH)"],
+        "bounce_x": ["Bounce (x)"],
+        "bounce_y": ["Bounce (y)"],
+        "hit_x": ["Hit (x)"],
+        "hit_y": ["Hit (y)"],
+        "direction": ["Direction"],
     },
 }
 

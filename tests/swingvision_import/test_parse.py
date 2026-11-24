@@ -158,3 +158,74 @@ def test_parse_raises_a_clear_error_when_a_required_column_is_missing(tmp_path: 
 
     with pytest.raises(ValueError, match="Points"):
         SwingVisionParser(ImportConfig()).parse(path)
+
+
+def _minimal_workbook_with_shots(shots_header: list, shots_rows: list):
+    """A valid non-Pro export: real Sets, empty Points/Games, custom Shots."""
+    workbook = Workbook()
+    sets_sheet = workbook.active
+    sets_sheet.title = "Sets"
+    sets_sheet.append(["Set #", "Winner", "Games Won", "Games Lost"])
+    sets_sheet.append([1, "host", 6, 4])
+    workbook.create_sheet("Games").append(["Set #", "Game #", "Server", "Winner"])
+    workbook.create_sheet("Points").append(
+        ["Set #", "Game #", "Point #", "Server", "Winner", "1st Serve In", "2nd Serve In",
+         "Shot Type"]
+    )
+    settings = workbook.create_sheet("Settings")
+    settings.append(["Host Team", "Guest Team"])
+    settings.append(["Test Player", "Test Opponent"])
+    shots = workbook.create_sheet("Shots")
+    shots.append(shots_header)
+    for row in shots_rows:
+        shots.append(row)
+    return workbook
+
+
+def test_parse_reads_court_plane_coordinates_and_direction(tmp_path: Path):
+    # The real Shots sheet carries Bounce/Hit coordinates and Direction; they
+    # were dropped by older imports. They parse now (court-real placement).
+    header = ["Point", "Shot", "Player", "Type", "Stroke", "Result",
+              "Bounce (x)", "Bounce (y)", "Hit (x)", "Hit (y)", "Direction"]
+    rows = [[1, 1, "Test Player", "first_serve", "Serve", "In",
+             -1.43827, 22.620897, 0.365234, 0.802878, "Cross"]]
+    workbook = _minimal_workbook_with_shots(header, rows)
+    path = tmp_path / "coords.xlsx"
+    workbook.save(path)
+
+    raw = SwingVisionParser(ImportConfig()).parse(path)
+
+    shot = raw.shots[0]
+    assert shot.bounce_x == pytest.approx(-1.43827)
+    assert shot.bounce_y == pytest.approx(22.620897)
+    assert shot.hit_x == pytest.approx(0.365234)
+    assert shot.hit_y == pytest.approx(0.802878)
+    assert shot.direction == "cross"  # normalized to lowercase
+
+
+def test_coordinate_columns_default_to_none_when_absent(tmp_path: Path):
+    # An older/leaner export without the coordinate columns still parses;
+    # the new fields are simply None, so nothing downstream breaks.
+    header = ["Point", "Shot", "Player", "Type", "Stroke", "Result"]
+    rows = [[1, 1, "Test Player", "first_serve", "Serve", "In"]]
+    workbook = _minimal_workbook_with_shots(header, rows)
+    path = tmp_path / "no_coords.xlsx"
+    workbook.save(path)
+
+    shot = SwingVisionParser(ImportConfig()).parse(path).shots[0]
+
+    assert shot.bounce_x is None
+    assert shot.bounce_y is None
+    assert shot.hit_x is None
+    assert shot.hit_y is None
+    assert shot.direction is None
+
+
+def test_blank_direction_cell_is_none_not_empty_string(tmp_path: Path):
+    header = ["Point", "Shot", "Player", "Type", "Stroke", "Result", "Direction"]
+    rows = [[1, 1, "Test Player", "first_serve", "Serve", "In", ""]]
+    workbook = _minimal_workbook_with_shots(header, rows)
+    path = tmp_path / "blank_dir.xlsx"
+    workbook.save(path)
+
+    assert SwingVisionParser(ImportConfig()).parse(path).shots[0].direction is None
