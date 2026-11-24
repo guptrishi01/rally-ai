@@ -7,3 +7,6 @@ numpy>=1.26
 # Bundles a static ffmpeg binary, used to pull frames for footage checks
 # (swingvision_import/footage.py). Falls back to ffmpeg on PATH if absent.
 imageio-ffmpeg>=0.5
+# Court-line detection and homography fitting for the independent tracker
+# (src/tracking/court.py, calibrate.py). Classic CV only - no ML weights.
+opencv-python>=4.8

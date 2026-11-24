@@ -3,7 +3,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 
 [tool.coverage.run]
-source = ["swingvision_import", "stats", "ai", "reports"]
+source = ["swingvision_import", "stats", "ai", "reports", "tracking"]
 
 [tool.ruff]
 line-length = 100
