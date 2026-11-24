@@ -119,8 +119,7 @@ def test_condensed_footage_is_refused_before_anything_is_spent():
 
     message = str(exc_info.value)
     assert "2190" in message and "449" in message
-    assert "rallies-only" in message
-    assert "filter" in message
+    assert "rally filter" in message
 
 
 def test_full_length_footage_passes_alignment():
@@ -523,3 +522,156 @@ def test_an_unclear_sighting_does_not_block_agreement():
     verdict = _verdict(tracked_seen_at="unclear")
 
     assert footage.compare(verdict, _point(), _window(tracked_side="near")) == "agrees"
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed retrieval for the condensed rallies-only export
+# ---------------------------------------------------------------------------
+
+
+def _retrieval_json(**overrides) -> str:
+    payload = {
+        "rally_present": True,
+        "offset_seconds": 10.0,
+        "confidence": "high",
+        "reasoning": "Shot sequence matches - serve, return, forehand.",
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def _fingerprint_shot(
+    point: int,
+    number: int,
+    player: str,
+    stroke: str,
+    video_time: float,
+    spin: str = "Flat",
+    speed: float = 60.0,
+) -> RawShotRow:
+    return RawShotRow(
+        point_number=point,
+        shot_number=number,
+        player=player,
+        shot_type="",
+        stroke=stroke,
+        result="In",
+        video_time=video_time,
+        hit_side=None,
+        spin=spin,
+        speed_mph=speed,
+    )
+
+
+def test_fingerprint_point_marks_the_tracked_player_and_strips_outcome():
+    """The fingerprint carries only sheet fields that identify the shots
+    (who hit it, stroke, speed) - never the outcome. The judge call
+    forms its outcome independently later, so if "Result" leaked into
+    the retrieval call it would stop being a clean independent check."""
+    shots = [
+        _fingerprint_shot(1, 1, "Me", "Serve", 10.0, speed=70.0),
+        _fingerprint_shot(1, 2, "You", "Forehand", 11.0, spin="Topspin", speed=55.0),
+        _fingerprint_shot(1, 3, "Me", "Backhand", 12.0, spin="Slice", speed=42.0),
+    ]
+
+    prints = footage.fingerprint_point(shots, "Me")
+
+    assert [f.who for f in prints] == ["tracked", "opponent", "tracked"]
+    assert [f.stroke for f in prints] == ["Serve", "Forehand", "Backhand"]
+    assert [f.speed_mph for f in prints] == [70, 55, 42]
+    # ShotFingerprint has no field named "result". Pinning the exact
+    # field set makes any future drift (leaking Result in) an obvious
+    # structural failure rather than a quiet regression.
+    assert set(footage.ShotFingerprint.__dataclass_fields__) == {
+        "who",
+        "stroke",
+        "spin",
+        "speed_mph",
+    }
+
+
+def test_predict_condensed_center_falls_inside_the_video():
+    """The arithmetic model solves padding so the concatenated clips
+    total the video length; every predicted center is inside [0, length]
+    by construction."""
+    shots_by_point = {
+        1: [
+            _fingerprint_shot(1, 1, "Me", "Serve", 10.0),
+            _fingerprint_shot(1, 2, "You", "Forehand", 13.0),
+        ],
+        2: [_fingerprint_shot(2, 1, "Me", "Serve", 25.0)],
+        3: [
+            _fingerprint_shot(3, 1, "Me", "Serve", 40.0),
+            _fingerprint_shot(3, 2, "You", "Backhand", 44.0),
+            _fingerprint_shot(3, 3, "Me", "Forehand", 48.0),
+        ],
+    }
+    length = 60.0
+
+    center = footage.predict_condensed_center(shots_by_point, 2, length, min_padding=4.0)
+
+    assert center is not None
+    assert 0.0 <= center <= length
+
+
+def test_locate_point_in_condensed_parses_a_found_verdict():
+    client = _FakeClient(response_text=_retrieval_json())
+    prints = [footage.ShotFingerprint("tracked", "Serve", "Flat", 70)]
+    frames = _frames()
+
+    verdict = footage.locate_point_in_condensed(
+        client, footage.FootageConfig(), prints, frames, window_seconds=50.0
+    )
+
+    assert verdict.found is True
+    assert verdict.offset_s == 10.0
+    assert verdict.confidence == "high"
+
+
+def test_locate_point_in_condensed_parses_a_not_found_verdict():
+    """The "rally not present in these frames" answer is the honest
+    outcome for points the condensed export doesn't contain. Downstream
+    must never turn this into a judgement."""
+    client = _FakeClient(
+        response_text=_retrieval_json(
+            rally_present=False,
+            offset_seconds=0.0,
+            reasoning="None of these frames show the described shot sequence.",
+        )
+    )
+
+    verdict = footage.locate_point_in_condensed(
+        client,
+        footage.FootageConfig(),
+        [footage.ShotFingerprint("tracked", "Serve", "Flat", 70)],
+        _frames(),
+        window_seconds=50.0,
+    )
+
+    assert verdict.found is False
+
+
+def test_the_retrieval_prompt_never_sees_the_point_outcome():
+    """Same rule as the judge call's allowlist: anything new reaching
+    the retrieval prompt has to be argued for in this test, so the
+    outcome cannot be silently added. Point outcome fields would turn
+    "found" into "told where to find it", which is no longer an
+    independent location check."""
+    import inspect
+
+    locate_params = set(inspect.signature(footage.locate_point_in_condensed).parameters)
+    assert "point" not in locate_params and "record" not in locate_params
+
+    retrieval_prompt_params = set(inspect.signature(footage._retrieval_prompt).parameters)
+    assert retrieval_prompt_params == {"fingerprints", "window_seconds", "frame_count"}
+
+    fingerprint_params = set(inspect.signature(footage.fingerprint_point).parameters)
+    assert fingerprint_params == {"shots", "host_name"}
+    # The fingerprint type's field names are the allowlist of what the
+    # retrieval prompt may see about each shot. Pin them exactly.
+    assert set(footage.ShotFingerprint.__dataclass_fields__) == {
+        "who",
+        "stroke",
+        "spin",
+        "speed_mph",
+    }

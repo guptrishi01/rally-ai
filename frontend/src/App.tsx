@@ -40,7 +40,7 @@ const TABS: TabDef[] = [
     index: '02',
     title: 'What you felt, beside what happened.',
     lede:
-      'Your own account of a match, read back to you next to its numbers — and a coach that only argues from both.',
+      "Your own account of a match, read back to you next to its numbers — with a reflection grounded in both. Tips and advice, not a coach's training plan.",
   },
   {
     id: 'statistics',
@@ -261,7 +261,7 @@ export default function App() {
             <div className="mt-4 flex flex-col gap-2.5 text-[14px] text-[#a9b0cc]">
               <span>Ingest &rarr; Review</span>
               <span>Resolve &rarr; Finalize</span>
-              <span>Stats &rarr; Coach</span>
+              <span>Stats &rarr; Tips</span>
             </div>
           </div>
         </div>

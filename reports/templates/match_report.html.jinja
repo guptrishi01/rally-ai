@@ -33,7 +33,7 @@
   }
   .coaching-card .recommendation { font-weight: 600; margin: 4px 0; }
   .coaching-card .observation { color: var(--ink-secondary); font-size: 14px; }
-  .coaching-card .drill-meta,
+  .coaching-card .practice-meta,
   .coaching-card .focus-area {
     font-size: 13px;
     color: var(--ink-secondary);
@@ -76,7 +76,12 @@
 
   {% if improvement_plan %}
   <section>
-    <h2>Improvement Plan</h2>
+    <h2>Tips from this match</h2>
+    <p class="observation" style="margin-bottom: 12px;">
+      Grounded in the stats above — ideas to try, not a training plan.
+      Working with a real coach is still the right call for anything
+      serious.
+    </p>
     {% for item in improvement_plan %}
     <div class="coaching-card">
       <div class="priority">{{ item.priority }} priority · {{ item.category }}</div>
@@ -87,7 +92,7 @@
   </section>
 
   <section>
-    <h2>Strategy</h2>
+    <h2>Strategy tips</h2>
     {% for item in strategy %}
     <div class="coaching-card">
       <div class="priority">{{ item.priority }} priority</div>
@@ -98,19 +103,19 @@
   </section>
 
   <section>
-    <h2>Drills</h2>
-    {% for item in drills %}
+    <h2>Practice ideas</h2>
+    {% for item in practice_ideas %}
     <div class="coaching-card">
       <div class="priority">{{ item.priority }} priority</div>
       <div class="recommendation">{{ item.recommendation }}</div>
       <div class="observation">{{ item.observation }}</div>
-      <div class="drill-meta">{{ item.drill_name }} — {{ item.frequency }}</div>
+      <div class="practice-meta">{{ item.practice_name }} — {{ item.how_to_try }}</div>
     </div>
     {% endfor %}
   </section>
 
   <section>
-    <h2>Fitness</h2>
+    <h2>Fitness tips</h2>
     {% for item in fitness %}
     <div class="coaching-card">
       <div class="priority">{{ item.priority }} priority</div>

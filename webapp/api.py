@@ -64,8 +64,13 @@ _OVERRIDE_RATING_FIELDS = ("energy_rating", "mental_rating")
 
 # Footage-check settings a caller may override; anything else stays at
 # the module default so a request can't, say, aim it at another model
-# by accident.
-_FOOTAGE_OVERRIDES = frozenset({"model", "workers", "frame_width", "end_frames"})
+# by accident. `source` is on the list because selecting
+# "condensed_rallies" changes the pipeline path entirely (retrieval
+# instead of seek-by-time), and the user may know their export is
+# condensed before the alignment check would see it.
+_FOOTAGE_OVERRIDES = frozenset(
+    {"model", "workers", "frame_width", "end_frames", "source"}
+)
 
 # Footage checks run for minutes, so they run on a thread and the UI
 # polls. Process-local by design - see webapp/jobs.py.
@@ -638,11 +643,29 @@ def create_api_blueprint(
             for point in set_record.points
             if point.footage_check is not None
         )
+        # The denominator the review UI banner shows alongside every other
+        # number. Counted off the record so the caller never has to re-derive
+        # it and risk disagreeing with what the pipeline reports.
+        points_played = sum(
+            1
+            for set_record in record.sets
+            for point in set_record.points
+            if point.source_point_number is not None
+        )
+        not_in_footage = sum(
+            1
+            for set_record in record.sets
+            for point in set_record.points
+            if point.footage_check is not None
+            and point.footage_check.get("verdict") == "not_in_footage"
+        )
         status = {
             "available": False,
             "reason": None,
             "eligible_points": eligible,
             "already_checked": already,
+            "points_played": points_played,
+            "not_in_footage": not_in_footage,
             "estimate_usd": None,
             "model": footage.FootageConfig().model,
         }

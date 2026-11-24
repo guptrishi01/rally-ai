@@ -574,7 +574,7 @@ def test_footage_status_refuses_a_condensed_export(client, monkeypatch):
     status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
 
     assert status["available"] is False
-    assert "rallies-only" in status["reason"]
+    assert "rally filter" in status["reason"]
 
 
 def test_footage_status_quotes_a_cost_before_anything_is_spent(client, monkeypatch):
@@ -591,6 +591,44 @@ def test_footage_status_quotes_a_cost_before_anything_is_spent(client, monkeypat
     assert status["available"] is True
     assert status["estimate_usd"] > 0
     assert status["model"] == "claude-opus-5"
+    # The denominator the UI must show alongside every verdict count.
+    # Set by the backend, not derived by the caller, so the two cannot
+    # drift apart.
+    assert status["points_played"] >= status["eligible_points"]
+    assert status["not_in_footage"] == 0
+
+
+def test_footage_status_exposes_coverage_denominator_before_the_run(client, monkeypatch):
+    """Every surface that shows a verdict count must also show what it is a
+    fraction of; the UI reads this once, so the field is non-optional."""
+    upload = _upload(
+        client,
+        _timed_xlsx_bytes(),
+        video_files=(io.BytesIO(b"fake"), "clip.mp4"),
+    ).get_json()
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    status = client.get(f"/api/pending/{upload['json_filename']}/footage").get_json()
+
+    assert "points_played" in status
+    assert status["points_played"] > 0
+    assert "not_in_footage" in status
+
+
+def test_source_override_round_trips_to_footage_config():
+    """The user already knows their export is condensed, so they must be
+    able to opt into the retrieval path without asking the alignment guard
+    first. An override set that excludes `source` would leave the whole
+    condensed_rallies mode unreachable from the UI - the gap discovered
+    after the background fork landed the pipeline-side code. Guarded here
+    so a future override-list cleanup cannot silently drop it."""
+    from webapp.api import _FOOTAGE_OVERRIDES
+
+    assert "source" in _FOOTAGE_OVERRIDES
+    # And the value has to actually construct a FootageConfig - no point
+    # routing through a key the config won't accept.
+    assert footage.FootageConfig(source="condensed_rallies").source == "condensed_rallies"
 
 
 def test_starting_a_check_without_footage_is_refused(client):

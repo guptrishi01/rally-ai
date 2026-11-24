@@ -126,9 +126,12 @@ export interface FlaggedPointShot {
 
 /** What the footage check concluded for one point. A "disagrees" verdict
  *  never overwrites anything - it is context for the human, exactly like
- *  ai_suggested_point_end_type. */
+ *  ai_suggested_point_end_type. "not_in_footage" means the point's rally
+ *  is not present in the condensed export (the structurally-missing
+ *  serve/return-decided cases); the point stays flagged honestly rather
+ *  than being judged against a nearby rally. */
 export interface FootageCheck {
-  verdict: 'agrees' | 'disagrees' | 'inconclusive'
+  verdict: 'agrees' | 'disagrees' | 'inconclusive' | 'not_in_footage'
   point_end_type: string
   point_won: boolean
   confidence: string
@@ -137,11 +140,16 @@ export interface FootageCheck {
   server_seen: string
 }
 
+/** What a footage run did. Every coverage figure here must be shown with
+ *  its denominator (`points_played`), never alone - a "20 confirmed" read
+ *  without "of 123 points played" context misleads about the tool's reach. */
 export interface FootageRunSummary {
+  points_played: number
   checked: number
   agreed: number
   disagreed: number
   inconclusive: number
+  not_in_footage: number
   failed: number
   server_mismatches: number
   input_tokens: number
@@ -164,6 +172,12 @@ export interface FootageStatus {
   reason: string | null
   eligible_points: number
   already_checked: number
+  /** Denominator for every coverage figure the UI shows. */
+  points_played: number
+  /** Points already marked as structurally absent from the condensed
+   *  export - shown so "N confirmed" never reads without what is being
+   *  left out. */
+  not_in_footage: number
   estimate_usd: number | null
   model: string
   job: FootageJob | null

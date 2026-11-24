@@ -1,7 +1,7 @@
 from .config import AICoachConfig
 from .context import CoachContext, build_context
 from .pipeline import AICoachPipeline
-from .records import CoachingItem, CoachingReport, DrillItem, FitnessItem, SupportingStat
+from .records import CoachingItem, CoachingReport, FitnessItem, PracticeIdeaItem, SupportingStat
 
 __all__ = [
     "AICoachConfig",
@@ -9,8 +9,8 @@ __all__ = [
     "CoachContext",
     "CoachingItem",
     "CoachingReport",
-    "DrillItem",
     "FitnessItem",
+    "PracticeIdeaItem",
     "SupportingStat",
     "build_context",
 ]

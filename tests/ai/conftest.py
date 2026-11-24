@@ -29,14 +29,14 @@ def canned_item(category_hint: str) -> dict:
     """Builds a valid, minimal response item for the given specialist.
 
     Args:
-        category_hint: "strategy", "drill", or "fitness".
+        category_hint: "strategy", "practice_idea", or "fitness".
 
     Returns:
         A dict matching that specialist's expected JSON item shape.
     """
     item = {
         "observation": f"Sample {category_hint} observation",
-        "recommendation": f"Sample {category_hint} recommendation",
+        "recommendation": f"Sample {category_hint} tip, worth trying",
         "supporting_stat": {
             "stat": "FS%",
             "value": 55.0,
@@ -45,18 +45,18 @@ def canned_item(category_hint: str) -> dict:
         },
         "priority": "medium",
     }
-    if category_hint == "drill":
-        item["drill_name"] = "Cross-court consistency"
-        item["frequency"] = "15 min, 3x/week"
+    if category_hint == "practice_idea":
+        item["practice_name"] = "Cross-court consistency"
+        item["how_to_try"] = "trade deep cross-court balls until one breaks down"
     elif category_hint == "fitness":
         item["focus_area"] = "endurance"
     return item
 
 
 def _category_from_system_prompt(system: str) -> str:
-    if "drill designer" in system:
-        return "drill"
-    if "conditioning coach" in system:
+    if "practice ideas" in system:
+        return "practice_idea"
+    if "physical and mental patterns" in system:
         return "fitness"
     return "strategy"
 

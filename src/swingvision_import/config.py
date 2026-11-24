@@ -67,6 +67,8 @@ DEFAULT_COLUMN_ALIASES: dict[str, dict[str, list[str]]] = {
         "result": ["Result"],
         "video_time": ["Video Time"],
         "hit_side": ["Hit Side"],
+        "spin": ["Spin"],
+        "speed_mph": ["Speed (MPH)"],
     },
 }
 

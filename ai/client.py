@@ -14,19 +14,19 @@ from typing import Protocol
 import anthropic
 
 from .config import AICoachConfig
-from .records import Category, CoachingItem, DrillItem, FitnessItem, SupportingStat
+from .records import Category, CoachingItem, FitnessItem, PracticeIdeaItem, SupportingStat
 
 logger = logging.getLogger(__name__)
 
 _ITEM_CLASSES: dict[str, type] = {
     "strategy": CoachingItem,
-    "drill": DrillItem,
+    "practice_idea": PracticeIdeaItem,
     "fitness": FitnessItem,
 }
 
 _EXTRA_FIELDS: dict[str, list[str]] = {
     "strategy": [],
-    "drill": ["drill_name", "frequency"],
+    "practice_idea": ["practice_name", "how_to_try"],
     "fitness": ["focus_area"],
 }
 
@@ -140,7 +140,7 @@ def call_specialist(
     Args:
         client: An anthropic.Anthropic-shaped client.
         config: Model/token settings.
-        category: "strategy", "drill", or "fitness" — selects which
+        category: "strategy", "practice_idea", or "fitness" — selects which
             dataclass to parse items into.
         system_prompt: The specialist's full system prompt, already built
             by prompts.py (includes the context and the response schema).
@@ -158,7 +158,7 @@ def call_specialist(
             model=config.model,
             max_tokens=config.max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": "Generate the coaching items now."}],
+            messages=[{"role": "user", "content": "Generate the tips now."}],
         )
     except anthropic.APIError as exc:
         raise SpecialistError(category, "", exc) from exc

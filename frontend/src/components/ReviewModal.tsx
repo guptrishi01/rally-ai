@@ -238,6 +238,8 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                       >
                         {current.footage_check.verdict === 'disagrees'
                           ? 'Contradicts the tracker'
+                          : current.footage_check.verdict === 'not_in_footage'
+                          ? 'Not in this footage'
                           : `Couldn't settle it (${current.footage_check.confidence})`}
                       </p>
                     </div>

@@ -105,6 +105,28 @@ class FootageConfig:
             rejects it, the run switches it off and carries on.
         estimated_output_tokens: Output (incl. thinking) assumed per point
             for the *estimate only*; the run reports the real figure.
+        source: What kind of footage is being checked.
+
+            - "full": the full-length recording Video Time indexes.
+              check_alignment() refuses anything shorter; frames are
+              seeked to by time and judged directly.
+            - "condensed_rallies": SwingVision's rallies-only export.
+              Only ~70% of points are present (no serve- or
+              return-decided ones), so the alignment guard is skipped
+              AND every flagged point is first run through
+              locate_point_in_condensed(). A point whose rally the
+              retrieval cannot find is marked `not_in_footage` and
+              stays flagged honestly, rather than being judged against
+              some other rally in the window. Picked explicitly by
+              the caller - there is no auto-detection.
+        retrieval_window: Seconds on each side of the predicted point
+            position to extract retrieval frames from. Only used when
+            `source == "condensed_rallies"`.
+        retrieval_frames: How many frames to sample across that window.
+        retrieval_min_duration_padding: Floor on per-point video time
+            when fitting the concatenation model, to account for
+            single-shot points (a serve straight out still takes real
+            seconds on screen).
     """
 
     model: str = "claude-opus-5"
@@ -119,6 +141,10 @@ class FootageConfig:
     retry_base_delay: float = 2.0
     use_fallbacks: bool = True
     estimated_output_tokens: int = 2500
+    source: str = "full"
+    retrieval_window: float = 25.0
+    retrieval_frames: int = 6
+    retrieval_min_duration_padding: float = 4.0
 
 
 @dataclass(frozen=True)
@@ -382,21 +408,20 @@ def check_alignment(
                 f"{durations[part]:.0f}s ({durations[part] / 60:.0f} min) long"
             )
     if problems:
-        # Name the cause, not just the symptom. This is reached by saving the
-        # video from SwingVision with its rallies filter still on, which is
-        # the default way the share sheet behaves - so "upload the full
-        # video" alone reads as a reproach rather than an instruction.
+        # Name the cause, not just the symptom. Duration mismatch is the
+        # actual signal; the filename isn't, since users commonly rename on
+        # the way through cloud storage.
         raise FootageAlignmentError(
             "This footage doesn't line up with the export's timestamps ("
             + "; ".join(problems)
-            + "). The usual cause is SwingVision's rallies-only export - a file "
-            "named like '...-Filtered-Rallies.mp4'. Saving the video while the "
-            "app's rally filter is on exports only the rallies, but Video Time "
-            "still refers to the full-length recording. It is also a biased "
-            "sample, holding roughly the longest 45% of points and none that "
-            "ended on a serve or return, so it cannot check an ace, a double "
-            "fault or a return error. Clear the filter in SwingVision before "
-            "saving, and check the saved video runs the full match length."
+            + "). The usual cause is SwingVision's rally filter being on when "
+            "the video is saved: the saved file then holds only the rallies, "
+            "but Video Time still indexes the full-length recording. It is "
+            "also a biased sample - the longest ~45% of points and none that "
+            "ended on a serve or return - so it cannot check an ace, a double "
+            "fault or a return error. Clear the rally filter in SwingVision "
+            "before saving, and the saved video should run the full match "
+            "length."
         )
 
 
@@ -770,6 +795,313 @@ def compare(verdict: FootageVerdict, point: PointRecord, window: PointWindow) ->
 
 
 # --------------------------------------------------------------------------
+# Content-addressed retrieval for the condensed rallies-only export
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ShotFingerprint:
+    """One shot's content-addressable features, from the sheet only.
+
+    The retrieval prompt uses these to answer "is the point whose shots
+    are listed present anywhere in these frames?" without ever seeing the
+    recorded outcome - the independence that makes a positive answer
+    trustworthy.
+
+    Attributes:
+        who: "tracked" or "opponent" - who hit this shot.
+        stroke: "Serve", "Forehand", "Backhand", etc.
+        spin: "Flat", "Topspin", "Slice", or None.
+        speed_mph: Shot speed rounded to the nearest MPH, or None.
+    """
+
+    who: str
+    stroke: str
+    spin: str | None
+    speed_mph: int | None
+
+
+@dataclass(frozen=True)
+class LocationVerdict:
+    """What the retrieval call concluded for one point.
+
+    Attributes:
+        found: Whether the rally was identified in the frames.
+        offset_s: Seconds from the predicted window start to the located
+            rally, when found. Meaningless when found is False.
+        confidence: "high", "medium" or "low".
+        reasoning: One or two sentences, shown to the reviewer.
+        input_tokens: Billed input tokens for the call.
+        output_tokens: Billed output tokens for the call.
+    """
+
+    found: bool
+    offset_s: float
+    confidence: str
+    reasoning: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+LOCATION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "rally_present": {"type": "boolean"},
+        "offset_seconds": {"type": "number"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["rally_present", "offset_seconds", "confidence", "reasoning"],
+    "additionalProperties": False,
+}
+
+
+def fingerprint_point(shots: list[RawShotRow], host_name: str) -> list[ShotFingerprint]:
+    """Builds the shot fingerprint sequence for one point.
+
+    Reads only sheet fields the retrieval prompt may legitimately see.
+    The point outcome (winner/error/at-net) is NOT in the fingerprint
+    and must never reach the prompt from any other path - the retrieval
+    independence test pins the parameter allowlist exactly.
+
+    Args:
+        shots: The point's shots, in order.
+        host_name: The tracked player's name as it appears on shots.
+
+    Returns:
+        One fingerprint per shot, in shot order.
+    """
+    fingerprints = []
+    for shot in sorted(shots, key=lambda s: s.video_time or 0.0):
+        if shot.video_time is None:
+            continue
+        who = "tracked" if shot.player == host_name else "opponent"
+        speed = round(shot.speed_mph) if shot.speed_mph is not None else None
+        fingerprints.append(
+            ShotFingerprint(
+                who=who,
+                stroke=shot.stroke or "",
+                spin=shot.spin,
+                speed_mph=speed,
+            )
+        )
+    return fingerprints
+
+
+def predict_condensed_center(
+    shots_by_point: dict[int, list[RawShotRow]],
+    target_point: int,
+    video_duration: float,
+    min_padding: float,
+) -> float | None:
+    """Predicts the midpoint of a point's rally in the condensed video.
+
+    Separated from the window computation so the caller can pair this
+    midpoint with the config-controlled retrieval_window instead of a
+    locally-derived half-width.
+
+    Args:
+        shots_by_point: Point number -> its shots.
+        target_point: Which point to predict a midpoint for.
+        video_duration: Seconds. Used as the sum to solve padding against.
+        min_padding: Floor on a single clip's duration.
+
+    Returns:
+        Seconds into the video, or None if the point isn't in the sheet.
+    """
+    if target_point not in shots_by_point:
+        return None
+    order = sorted(shots_by_point)
+    spans: list[float] = []
+    for point in order:
+        shots = shots_by_point[point]
+        times = [s.video_time for s in shots if s.video_time is not None]
+        spans.append(max(times) - min(times) if len(times) >= 2 else 0.0)
+    lo, hi = 0.0, 60.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        total = sum(max(span + mid, min_padding) for span in spans)
+        if total < video_duration:
+            lo = mid
+        else:
+            hi = mid
+    padding = (lo + hi) / 2
+    cursor = 0.0
+    for point, span in zip(order, spans, strict=True):
+        duration = max(span + padding, min_padding)
+        if point == target_point:
+            return cursor + duration / 2
+        cursor += duration
+    return None
+
+
+def _retrieval_prompt(
+    fingerprints: list[ShotFingerprint], window_seconds: float, frame_count: int
+) -> str:
+    """Instructions for the content-addressed retrieval call.
+
+    Describes the shot fingerprint to look for, asks whether these frames
+    show that rally, and - if yes - roughly when within the window.
+    Deliberately does NOT include the point's recorded outcome, which the
+    judge call still has to form independently later.
+    """
+    shot_lines = []
+    for i, shot in enumerate(fingerprints, start=1):
+        bits = [shot.who.upper(), shot.spin or "", shot.stroke]
+        label = " ".join(bit for bit in bits if bit)
+        if shot.speed_mph is not None:
+            label += f" ({shot.speed_mph} MPH)"
+        shot_lines.append(f"  {i}. {label}")
+
+    return "\n".join(
+        [
+            "These are still frames from a fixed camera behind one end of a "
+            "tennis court, spanning roughly {:.0f} seconds of SwingVision's "
+            "'filtered rallies' export. The export is the match's rallies "
+            "concatenated with no overlay and no between-point footage, so "
+            "adjacent frames may cross from one rally into the next.".format(
+                window_seconds
+            ),
+            "",
+            "Find the ONE rally whose shots match this sequence (from the "
+            "spreadsheet, not the video):",
+            *shot_lines,
+            "",
+            "Report:",
+            '- rally_present: true if the described rally is in these frames.',
+            "- offset_seconds: if present, approximately where in these "
+            f"frames the rally starts. The frames span 0..{window_seconds:.0f}s "
+            f"across {frame_count} evenly-spaced samples; count from the "
+            "first frame.",
+            '- confidence: "high", "medium" or "low".',
+            "- reasoning: one or two sentences on how you decided.",
+            "",
+            "If no rally in these frames matches the described shot "
+            "sequence - including when the frames cover a completely "
+            "different rally - answer rally_present=false. Do NOT guess at "
+            "the outcome, and do NOT substitute the nearest rally; a "
+            "missing rally stays flagged for a human rather than being "
+            "judged from the wrong footage.",
+            "",
+            "Respond with ONLY a JSON object matching this schema. No prose, "
+            "no markdown code fences.",
+            json.dumps(LOCATION_SCHEMA, indent=2),
+        ]
+    )
+
+
+def _retrieval_content(
+    frames: list[Frame],
+    fingerprints: list[ShotFingerprint],
+    window_seconds: float,
+) -> list[dict]:
+    """Builds the retrieval API message content: frames then instructions."""
+    blocks: list[dict] = []
+    for i, frame in enumerate(frames):
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(frame.jpeg).decode("ascii"),
+                },
+            }
+        )
+        blocks.append({"type": "text", "text": f"Frame {i + 1}"})
+    blocks.append(
+        {"type": "text", "text": _retrieval_prompt(fingerprints, window_seconds, len(frames))}
+    )
+    return blocks
+
+
+def locate_point_in_condensed(
+    client,
+    config: FootageConfig,
+    fingerprints: list[ShotFingerprint],
+    frames: list[Frame],
+    window_seconds: float,
+    fallbacks: FallbackSwitch | None = None,
+) -> LocationVerdict:
+    """Asks Claude whether a specific rally is present in a window of frames.
+
+    Args:
+        client: An anthropic.Anthropic-shaped client.
+        config: Model / retry settings.
+        fingerprints: The shot sequence that identifies the target rally.
+        frames: Frames across the predicted window, in time order.
+        window_seconds: Total span of the window the frames cover.
+        fallbacks: Shared refusal-fallback switch.
+
+    Returns:
+        The retrieval verdict. A LocationVerdict with found=False is the
+        honest answer when the rally isn't in these frames; nothing
+        downstream is allowed to turn it into a judgement.
+
+    Raises:
+        FootageError: On a hard failure that no retry can recover.
+    """
+    switch = fallbacks or FallbackSwitch(config.use_fallbacks)
+    content = _retrieval_content(frames, fingerprints, window_seconds)
+    attempt = 0
+    last_exc: Exception | None = None
+    while attempt < config.max_attempts:
+        attempt += 1
+        try:
+            betas = [_FALLBACK_BETA] if switch.enabled else []
+            response = client.beta.messages.create(
+                model=config.model,
+                max_tokens=config.max_tokens,
+                thinking={"type": "enabled", "budget_tokens": 4000},
+                betas=betas,
+                messages=[{"role": "user", "content": content}],
+            )
+            raw = extract_text(response)
+            data = json.loads(_strip_markdown_fence(raw))
+            return LocationVerdict(
+                found=bool(data["rally_present"]),
+                offset_s=float(data.get("offset_seconds") or 0.0),
+                confidence=data.get("confidence", "low"),
+                reasoning=data.get("reasoning", ""),
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+        except anthropic.BadRequestError as exc:
+            if switch.enabled:
+                switch.disable()
+                attempt -= 1
+                continue
+            last_exc = exc
+            break
+        except (anthropic.APIError, OSError) as exc:
+            last_exc = exc
+            if not is_transient_api_error(exc):
+                break
+            if attempt < config.max_attempts:
+                time.sleep(config.retry_base_delay * (2 ** (attempt - 1)))
+        except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            last_exc = exc
+            break
+    raise FootageError(f"Retrieval call failed: {last_exc}") from last_exc
+
+
+# Alias so a local test fake can reuse the same helper rather than
+# re-implementing JSON extraction twice. The judge call defines its own
+# version at module level; both strip the same markdown-fence artefact.
+def _strip_markdown_fence(text: str) -> str:
+    """Strips a leading/trailing markdown code fence, if present."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.split("\n")
+    if len(lines) > 1 and lines[-1].strip() == "```":
+        lines = lines[1:-1]
+    else:
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+# --------------------------------------------------------------------------
 # Cost
 # --------------------------------------------------------------------------
 
@@ -854,13 +1186,25 @@ def actual_cost(input_tokens: int, output_tokens: int, model: str) -> float:
 
 @dataclass
 class FootageRunSummary:
-    """What a verification run did.
+    """What a verification run did, with coverage against points played.
+
+    Every surface that shows these figures must also show the denominator
+    (`points_played`) alongside them. A "20 confirmed" read without the
+    "of 123 points played, 53 were not in this footage" context is the
+    exact way the tool misleads about its own reach - see the
+    feedback-honest-coverage rule in memory.
 
     Attributes:
+        points_played: Total points with shots in this match - the
+            denominator for every coverage figure below. Set once per run
+            from the record, not accumulated as the run proceeds.
         checked: Points a verdict was obtained for.
         agreed: Auto-confirmed - footage and reconstruction matched.
         disagreed: Footage contradicted the record; left for review.
         inconclusive: Footage couldn't settle it; left for review.
+        not_in_footage: Points whose rally the condensed export does not
+            contain, reported honestly instead of guessed at. Stays
+            `needs_review=True` for the human.
         failed: Points whose check errored; left untouched.
         server_mismatches: Verdicts that saw a different server than the
             spreadsheet recorded - a sign of misaligned footage.
@@ -870,10 +1214,12 @@ class FootageRunSummary:
         notes: Anything the reviewer should know about the run itself.
     """
 
+    points_played: int = 0
     checked: int = 0
     agreed: int = 0
     disagreed: int = 0
     inconclusive: int = 0
+    not_in_footage: int = 0
     failed: int = 0
     server_mismatches: int = 0
     input_tokens: int = 0

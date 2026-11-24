@@ -108,7 +108,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
       const journalText = [pros, cons, notes].filter(Boolean).join('\n\n')
       setFeedback(await api.coach(selected.match_id, journalText, force))
     } catch (err) {
-      setCoachError(err instanceof ApiError ? err.message : 'Failed to get coaching feedback.')
+      setCoachError(err instanceof ApiError ? err.message : 'Failed to get a reflection.')
     } finally {
       setCoaching(false)
     }
@@ -227,12 +227,12 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
               <Reveal>
                 <Panel spotlight className="h-full p-7">
                   <div className="flex items-baseline justify-between gap-4">
-                    <h3 className="h3">Coach's read</h3>
+                    <h3 className="h3">Reflection on this match</h3>
                     <span className="eyebrow">Claude</span>
                   </div>
                   <p className="lede mt-3 text-[14px]">
                     Grounded in this match's confirmed stats and what you just wrote — nothing
-                    else.
+                    else. Tips and reflection, not a replacement for a real coach.
                   </p>
 
                   {coachError && (
@@ -258,7 +258,7 @@ export default function Journal({ initialMatchId, onMatchIdConsumed }: JournalPr
                           onClick={() => handleCoach(false)}
                           disabled={coaching}
                         >
-                          {coaching ? 'Reading the match…' : 'Ask the coach'}
+                          {coaching ? 'Reading the match…' : 'Get a reflection'}
                         </button>
                         <p className="mt-3 text-[12px] text-[var(--color-dim)]">
                           Uses a cached read if one exists; otherwise this spends API credit.

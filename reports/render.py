@@ -104,7 +104,7 @@ def render_match_report(
         "serve_chart": _serve_chart(match_stats),
         "net_meter": net_meter_html,
         "strategy": coaching_report.strategy if coaching_report else [],
-        "drills": coaching_report.drills if coaching_report else [],
+        "practice_ideas": coaching_report.practice_ideas if coaching_report else [],
         "fitness": coaching_report.fitness if coaching_report else [],
         "improvement_plan": coaching_report.improvement_plan if coaching_report else [],
     }

@@ -537,7 +537,13 @@ class SwingVisionImportPipeline:
             )
         exe = footage.ffmpeg_exe()
         durations = [footage.probe_duration(video, exe) for video in videos]
-        footage.check_alignment(latest_by_part, durations)
+        # In full-match mode the guard refuses anything too short; in
+        # condensed-rallies mode the whole point is that the video IS too
+        # short, and the retrieval path handles the mismatch honestly, so
+        # the guard is deliberately skipped. The caller opts in explicitly
+        # via FootageConfig.source - there is no auto-detection.
+        if config.source != "condensed_rallies":
+            footage.check_alignment(latest_by_part, durations)
 
         targets = [
             (set_record, point)
@@ -548,7 +554,17 @@ class SwingVisionImportPipeline:
             and point.footage_check is None
         ]
 
-        summary = footage.FootageRunSummary()
+        # The denominator every coverage figure is a fraction of. Counted
+        # off the record once, not off the targets list, because "played"
+        # is independent of which points are still eligible for a check
+        # (confirmed points still count toward what the user played).
+        points_played = sum(
+            1
+            for set_record in record.sets
+            for point in set_record.points
+            if point.source_point_number is not None
+        )
+        summary = footage.FootageRunSummary(points_played=points_played)
         if not targets:
             return summary
 
@@ -557,7 +573,10 @@ class SwingVisionImportPipeline:
             lambda video, window: footage.frames_for_point(video, window, config, exe)
         )
 
-        def check(point) -> footage.FootageVerdict:
+        host_name = self._host_name(record)
+        condensed = config.source == "condensed_rallies"
+
+        def check_full(point) -> footage.FootageVerdict:
             window = windows[point.source_point_number]
             frames = extract(videos[window.part], window)
             return footage.judge_point(
@@ -570,21 +589,109 @@ class SwingVisionImportPipeline:
                 player_appearance=record.player_appearance,
             )
 
-        # One vision call per point, each independent and stateless - the
-        # same sanctioned ThreadPoolExecutor case as suggest() and
-        # ai/generate.py. Verdicts attach through an explicit future -> point
-        # map, never completion order, and results are tallied here on the
-        # main thread rather than in the workers.
+        def check_condensed(
+            point,
+        ) -> tuple[footage.LocationVerdict | None, footage.FootageVerdict | None]:
+            """Locate first, then judge only when the rally was found.
+
+            Returns (location_verdict, judge_verdict). Either can be None:
+            - location only, judge=None: rally not present in this footage.
+              Caller marks not_in_footage and moves on.
+            - location + judge: normal auto-confirm / disagree path.
+            """
+            window = windows[point.source_point_number]
+            point_shots = shots_by_point.get(point.source_point_number)
+            if point_shots is None:
+                return None, None
+            center = footage.predict_condensed_center(
+                shots_by_point,
+                point.source_point_number,
+                durations[window.part],
+                config.retrieval_min_duration_padding,
+            )
+            if center is None:
+                return None, None
+            half = config.retrieval_window
+            window_start = max(0.0, center - half)
+            window_end = min(durations[window.part], center + half)
+            window_seconds = window_end - window_start
+            if window_seconds <= 0:
+                return None, None
+
+            retrieval_frame_bytes = footage.extract_frames(
+                videos[window.part],
+                window_start,
+                window_seconds,
+                config.retrieval_frames,
+                config.frame_width,
+                exe,
+            )
+            step = window_seconds / max(1, config.retrieval_frames)
+            retrieval_frames = [
+                footage.Frame("search", i * step, jpeg)
+                for i, jpeg in enumerate(retrieval_frame_bytes)
+            ]
+            fingerprints = footage.fingerprint_point(point_shots, host_name)
+            location = footage.locate_point_in_condensed(
+                client, config, fingerprints, retrieval_frames, window_seconds, switch
+            )
+            if not location.found or location.confidence == "low":
+                return location, None
+
+            # Shift the judge window to the located rally end. The sheet
+            # tells us the rally's own duration; we re-aim the judge call at
+            # window_start + offset + (rally_duration - end_window_before).
+            rally_duration = window.last_shot - window.first_shot
+            rally_start_in_file = window_start + location.offset_s
+            rally_end_in_file = rally_start_in_file + rally_duration
+            located_window = footage.PointWindow(
+                part=window.part,
+                first_shot=rally_start_in_file,
+                prev_shot=(
+                    rally_end_in_file - (window.last_shot - window.prev_shot)
+                    if window.prev_shot is not None
+                    else None
+                ),
+                last_shot=rally_end_in_file,
+                tracked_serving=window.tracked_serving,
+                tracked_side=window.tracked_side,
+                shot_count=window.shot_count,
+            )
+            frames = extract(videos[window.part], located_window)
+            judge = footage.judge_point(
+                client,
+                config,
+                located_window,
+                frames,
+                record.reviewer_note,
+                switch,
+                player_appearance=record.player_appearance,
+            )
+            return location, judge
+
+        # One vision call per point in full mode; up to two per point in
+        # condensed mode (one retrieval + one judge if the rally was found).
+        # Each point is independent and stateless - the same sanctioned
+        # ThreadPoolExecutor case as suggest() and ai/generate.py. Verdicts
+        # attach through an explicit future -> point map, never completion
+        # order, and results are tallied here on the main thread rather
+        # than in the workers.
         workers = max(1, min(config.workers, len(targets)))
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(check, point): (set_record, point)
-                for set_record, point in targets
-            }
+            if condensed:
+                futures = {
+                    executor.submit(check_condensed, point): (set_record, point)
+                    for set_record, point in targets
+                }
+            else:
+                futures = {
+                    executor.submit(check_full, point): (set_record, point)
+                    for set_record, point in targets
+                }
             for done, future in enumerate(as_completed(futures), start=1):
                 set_record, point = futures[future]
                 try:
-                    verdict = future.result()
+                    result = future.result()
                 except footage.FootageError:
                     logger.exception(
                         "Footage check failed for set %d game %d point %d",
@@ -595,6 +702,38 @@ class SwingVisionImportPipeline:
                     summary.failed += 1
                 else:
                     window = windows[point.source_point_number]
+                    if condensed:
+                        location, verdict = result
+                        if location is not None:
+                            summary.input_tokens += location.input_tokens
+                            summary.output_tokens += location.output_tokens
+                        if verdict is None:
+                            # Retrieval missed (or came back low-confidence).
+                            # Honest reporting: the point stays flagged, with
+                            # "not in this footage" as the attached context.
+                            reason = (
+                                location.reasoning
+                                if location is not None
+                                else "no shot sequence to search by"
+                            )
+                            self._apply_not_in_footage(
+                                point,
+                                "rally not found in the condensed export's window - "
+                                + reason,
+                            )
+                            summary.not_in_footage += 1
+                            summary.usd = footage.actual_cost(
+                                summary.input_tokens,
+                                summary.output_tokens,
+                                config.model,
+                            )
+                            if done % 10 == 0:
+                                review.save_pending(record, self.config.pending_dir)
+                            if progress is not None:
+                                progress(summary)
+                            continue
+                    else:
+                        verdict = result
                     outcome = footage.compare(verdict, point, window)
                     self._apply_verdict(point, verdict, outcome)
                     summary.checked += 1
@@ -631,11 +770,15 @@ class SwingVisionImportPipeline:
             )
         review.save_pending(record, self.config.pending_dir)
         logger.info(
-            "Footage check on %s: %d agreed, %d disagreed, %d inconclusive, %d failed ($%.2f)",
+            "Footage check on %s: %d/%d points played; %d agreed, %d disagreed, "
+            "%d inconclusive, %d not in footage, %d failed ($%.2f)",
             json_path.name,
+            summary.checked,
+            summary.points_played,
             summary.agreed,
             summary.disagreed,
             summary.inconclusive,
+            summary.not_in_footage,
             summary.failed,
             summary.usd,
         )
@@ -664,6 +807,30 @@ class SwingVisionImportPipeline:
             # already recorded, so only the flag clears.
             point.needs_review = False
             point.confirmed_by = "footage"
+
+    @staticmethod
+    def _apply_not_in_footage(point, reason: str) -> None:
+        """Marks a point as structurally absent from the condensed footage.
+
+        The condensed rallies-only export does not contain every point - no
+        ace, double fault, service winner or return error is a rally, so no
+        amount of retrieval can find them. Rather than fabricate an answer
+        by judging a nearby rally, the point stays flagged for the human
+        and the reason is attached as context.
+
+        Args:
+            point: The flagged point.
+            reason: Short message shown to the reviewer.
+        """
+        point.footage_check = {
+            "verdict": "not_in_footage",
+            "point_end_type": "unclear",
+            "point_won": point.point_won,
+            "confidence": "high",
+            "reasoning": reason,
+            "at_net": "unclear",
+            "server_seen": "unclear",
+        }
 
     def _host_name(self, record: MatchRecord) -> str:
         """The tracked player's name as it appears on this match's shots.

@@ -117,8 +117,14 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
               />
             </div>
             <p className="num mt-3 text-[12px] text-[var(--color-dim)]">
-              {progress.checked} / {total} checked &middot; {progress.agreed} confirmed &middot;{' '}
-              ${progress.usd.toFixed(2)} so far
+              {progress.checked} / {total} checked &middot; {progress.agreed} confirmed
+              {progress.not_in_footage > 0 && (
+                <>
+                  {' '}
+                  &middot; {progress.not_in_footage} not in this footage
+                </>
+              )}{' '}
+              &middot; ${progress.usd.toFixed(2)} so far
             </p>
           </motion.div>
         )}
@@ -130,6 +136,12 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
 
       {summary && (
         <div className="mt-4 border-t border-[var(--color-line)] pt-4">
+          {/* The denominator always goes first. "Confirmed" alone invites
+              reading it as coverage; "confirmed, of N points played" makes
+              the missing ones visible instead of invisible. */}
+          <p className="num mb-2 text-[12px] text-[var(--color-dim)]">
+            Of {summary.points_played} points played
+          </p>
           <p className="text-[14px]">
             <span className="num" style={{ color: 'var(--color-win)' }}>
               {summary.agreed}
@@ -137,6 +149,13 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
             confirmed by footage &middot;{' '}
             <span className="num">{summary.disagreed}</span> disagreed &middot;{' '}
             <span className="num">{summary.inconclusive}</span> unclear
+            {summary.not_in_footage > 0 && (
+              <>
+                {' '}
+                &middot; <span className="num">{summary.not_in_footage}</span> not in this
+                footage
+              </>
+            )}
             {summary.failed > 0 && (
               <>
                 {' '}
@@ -147,6 +166,13 @@ export default function FootagePanel({ jsonFilename, onFinished }: FootagePanelP
           <p className="num mt-2 text-[12px] text-[var(--color-dim)]">
             Cost ${summary.usd.toFixed(2)}
           </p>
+          {summary.not_in_footage > 0 && (
+            <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
+              SwingVision&rsquo;s rallies-only export does not contain points that
+              ended on a serve or return. Those stay flagged for you to settle - we
+              can&rsquo;t verify what isn&rsquo;t in the file.
+            </p>
+          )}
           {summary.notes.map((note) => (
             <p key={note} className="mt-3 text-[13px]" style={{ color: 'var(--color-loss)' }}>
               {note}

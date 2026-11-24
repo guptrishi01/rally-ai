@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from ai.records import CoachingItem, CoachingReport, DrillItem, FitnessItem, SupportingStat
+from ai.records import (
+    CoachingItem,
+    CoachingReport,
+    FitnessItem,
+    PracticeIdeaItem,
+    SupportingStat,
+)
 
 
 def _stat(value: float) -> SupportingStat:
@@ -16,7 +22,17 @@ def _report() -> CoachingReport:
             CoachingItem("strategy", "obs1", "rec1", _stat(1), "low"),
             CoachingItem("strategy", "obs2", "rec2", _stat(2), "high"),
         ],
-        drills=[DrillItem("drill", "obs3", "rec3", _stat(3), "medium", "Drill A", "3x/week")],
+        practice_ideas=[
+            PracticeIdeaItem(
+                "practice_idea",
+                "obs3",
+                "rec3",
+                _stat(3),
+                "medium",
+                "Deep cross-court",
+                "trade deep cross-court balls until one breaks down",
+            )
+        ],
         fitness=[FitnessItem("fitness", "obs4", "rec4", _stat(4), "high", "endurance")],
     )
 
@@ -46,12 +62,28 @@ def test_to_dict_then_from_dict_round_trips_every_category():
     rebuilt = CoachingReport.from_dict(report.to_dict())
 
     assert rebuilt == report
-    assert rebuilt.drills[0].drill_name == "Drill A"
+    assert rebuilt.practice_ideas[0].practice_name == "Deep cross-court"
+    assert "cross-court" in rebuilt.practice_ideas[0].how_to_try
     assert rebuilt.fitness[0].focus_area == "endurance"
-    assert [item.priority for item in rebuilt.improvement_plan] == ["high", "high", "medium", "low"]
+    assert [item.priority for item in rebuilt.improvement_plan] == [
+        "high",
+        "high",
+        "medium",
+        "low",
+    ]
 
 
 def test_to_dict_omits_the_derived_improvement_plan_field():
     data = _report().to_dict()
 
     assert "improvement_plan" not in data
+
+
+def test_to_dict_uses_the_practice_ideas_key_not_drills():
+    """Serialization regression guard: a cached report under "drills" would
+    not round-trip through the renamed loader, so the key rename has to be
+    pinned at the serialization boundary - not just at the dataclass."""
+    data = _report().to_dict()
+
+    assert "practice_ideas" in data
+    assert "drills" not in data

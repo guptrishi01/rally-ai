@@ -1,4 +1,4 @@
-"""Runs the 3 coaching specialists concurrently.
+"""Runs the 3 tip specialists concurrently.
 
 This is the one place CLAUDE.md's code conventions name for
 ThreadPoolExecutor: three independent, stateless API calls against the same
@@ -14,15 +14,15 @@ from . import prompts
 from .client import AnthropicClientLike, SpecialistError, call_specialist
 from .config import AICoachConfig
 from .context import CoachContext
-from .records import CoachingItem, DrillItem, FitnessItem
+from .records import CoachingItem, FitnessItem, PracticeIdeaItem
 
 logger = logging.getLogger(__name__)
 
 
 def generate_all(
     client: AnthropicClientLike, config: AICoachConfig, context: CoachContext
-) -> tuple[list[CoachingItem], list[DrillItem], list[FitnessItem]]:
-    """Runs the strategy/drills/fitness specialists concurrently.
+) -> tuple[list[CoachingItem], list[PracticeIdeaItem], list[FitnessItem]]:
+    """Runs the strategy / practice-ideas / fitness specialists concurrently.
 
     Args:
         client: An anthropic.Anthropic-shaped client.
@@ -30,14 +30,14 @@ def generate_all(
         context: The fixed context all three specialists see.
 
     Returns:
-        (strategy items, drill items, fitness items). A specialist whose
+        (strategy tips, practice ideas, fitness tips). A specialist whose
         response fails to parse contributes an empty list for its category
         rather than failing the whole report — the failure is logged, not
         silently swallowed.
     """
     prompt_builders = {
         "strategy": prompts.strategy_prompt,
-        "drill": prompts.drill_prompt,
+        "practice_idea": prompts.practice_idea_prompt,
         "fitness": prompts.fitness_prompt,
     }
 
@@ -61,4 +61,4 @@ def generate_all(
                 )
                 results[category] = []
 
-    return results["strategy"], results["drill"], results["fitness"]
+    return results["strategy"], results["practice_idea"], results["fitness"]

@@ -16,35 +16,35 @@ def test_generate_all_invokes_all_three_specialists(sample_match_stats):
 
     assert len(client.messages.calls) == 3
     systems = {call["system"] for call in client.messages.calls}
-    assert any("strategy analyst" in s for s in systems)
-    assert any("drill designer" in s for s in systems)
-    assert any("conditioning coach" in s for s in systems)
+    assert any("tactical patterns" in s for s in systems)
+    assert any("practice ideas" in s for s in systems)
+    assert any("physical and mental patterns" in s for s in systems)
 
 
 def test_generate_all_returns_items_in_the_right_category_slot(sample_match_stats):
     client = FakeAnthropicClient()
     context = build_context(sample_match_stats)
 
-    strategy, drills, fitness = generate_all(client, AICoachConfig(), context)
+    strategy, practice_ideas, fitness = generate_all(client, AICoachConfig(), context)
 
     assert strategy[0].category == "strategy"
-    assert drills[0].category == "drill"
+    assert practice_ideas[0].category == "practice_idea"
     assert fitness[0].category == "fitness"
 
 
 def test_generate_all_does_not_fail_the_whole_report_when_one_specialist_fails(
     sample_match_stats, caplog
 ):
-    client = FakeAnthropicClient(raise_for={"drill"})
+    client = FakeAnthropicClient(raise_for={"practice_idea"})
     context = build_context(sample_match_stats)
 
     with caplog.at_level(logging.ERROR):
-        strategy, drills, fitness = generate_all(client, AICoachConfig(), context)
+        strategy, practice_ideas, fitness = generate_all(client, AICoachConfig(), context)
 
     assert len(strategy) == 1
-    assert drills == []
+    assert practice_ideas == []
     assert len(fitness) == 1
-    assert any("drill" in record.message for record in caplog.records)
+    assert any("practice_idea" in record.message for record in caplog.records)
 
 
 def test_generate_all_survives_a_real_api_failure_on_one_specialist(sample_match_stats, caplog):
@@ -55,8 +55,8 @@ def test_generate_all_survives_a_real_api_failure_on_one_specialist(sample_match
     context = build_context(sample_match_stats)
 
     with caplog.at_level(logging.ERROR):
-        strategy, drills, fitness = generate_all(client, AICoachConfig(), context)
+        strategy, practice_ideas, fitness = generate_all(client, AICoachConfig(), context)
 
     assert len(strategy) == 1
-    assert len(drills) == 1
+    assert len(practice_ideas) == 1
     assert fitness == []

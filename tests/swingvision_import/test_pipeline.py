@@ -1194,3 +1194,224 @@ def test_progress_is_reported_as_points_complete(
     )
 
     assert seen == sorted(seen) and seen[-1] > 0
+
+
+def test_the_summary_reports_points_played_as_the_denominator(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """Every coverage figure is a fraction of the points actually played.
+    Showing a verdict count without that denominator - "20 confirmed" -
+    reads as coverage. "20 confirmed of 100 points played" does not."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    record = load_pending(json_path)
+    expected_played = sum(
+        1 for s in record.sets for p in s.points if p.source_point_number is not None
+    )
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 10_000.0)
+
+    summary = pipeline.verify_footage(
+        _StubFootageClient([]),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+
+    assert expected_played > 0, "fixture must produce points"
+    assert summary.points_played == expected_played
+    # Even a run with no targets reports what Y is a fraction of.
+    empty_summary = pipeline.verify_footage(
+        _StubFootageClient([]),
+        json_path,
+        [tmp_path / "video.mp4"],
+        frame_source=_no_frames,
+    )
+    assert empty_summary.points_played == expected_played
+
+
+def test_the_summary_tracks_points_not_in_the_footage_as_their_own_bucket(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """A point whose rally the footage does not contain is NOT fabricated
+    by judging a nearby one - it goes in its own bucket and stays flagged
+    for a human. The summary must say how many landed there."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    record = load_pending(json_path)
+
+    # Simulate the retrieval miss by applying the helper directly, then
+    # read the record back and confirm the fields survive the round trip.
+    point = next(p for s in record.sets for p in s.points if p.needs_review)
+    pipeline._apply_not_in_footage(point, "rally not present in condensed export")
+    from swingvision_import.review import save_pending
+
+    save_pending(record, import_config.pending_dir)
+
+    reloaded = load_pending(json_path)
+    touched = next(p for s in reloaded.sets for p in s.points if p.footage_check)
+    assert touched.needs_review is True, "not_in_footage must never clear the flag"
+    assert touched.footage_check["verdict"] == "not_in_footage"
+    assert "condensed" in touched.footage_check["reasoning"]
+
+
+# ---------------------------------------------------------------------------
+# Condensed-rallies mode: retrieval + honest "not in footage" reporting
+# ---------------------------------------------------------------------------
+
+
+class _RetrievalClient:
+    """Fake that answers both the retrieval and the judge call.
+
+    The two calls run through the same client.beta.messages.create path -
+    this fake tells them apart by the schema in the message content, so
+    it can return a LocationVerdict JSON for the retrieval call and a
+    FootageVerdict JSON for the judge call."""
+
+    def __init__(self, found: bool = True, offset: float = 5.0, judge_outcome: str = "winner"):
+        self.found = found
+        self.offset = offset
+        self.judge_outcome = judge_outcome
+        self.messages = self
+        self.beta = self
+        self.calls: list[dict] = []
+
+    class _Usage:
+        input_tokens = 500
+        output_tokens = 200
+
+    class _Response:
+        def __init__(self, text: str):
+            from tests.ai.conftest import FakeMessage, FakeTextBlock
+
+            self._msg = FakeMessage(content=[FakeTextBlock(text=text)])
+            self._msg.usage = _RetrievalClient._Usage()
+            self._msg.stop_reason = "end_turn"
+
+        def __getattr__(self, name):
+            return getattr(self._msg, name)
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        text_blocks = [
+            b for b in kwargs["messages"][0]["content"] if b["type"] == "text"
+        ]
+        prompt = " ".join(b["text"] for b in text_blocks)
+        if "rally_present" in prompt:
+            import json as _json
+
+            return _RetrievalClient._Response(
+                _json.dumps(
+                    {
+                        "rally_present": self.found,
+                        "offset_seconds": self.offset,
+                        "confidence": "high" if self.found else "low",
+                        "reasoning": "fingerprint match" if self.found else "no match",
+                    }
+                )
+            )
+        # judge response
+        import json as _json
+
+        return _RetrievalClient._Response(
+            _json.dumps(
+                {
+                    "footage_usable": True,
+                    "server_seen": "tracked",
+                    "winner": "tracked",
+                    "point_end_type": self.judge_outcome,
+                    "tracked_at_net": "unclear",
+                    "confidence": "high",
+                    "reasoning": "judged after retrieval",
+                }
+            )
+        )
+
+
+def test_condensed_mode_skips_the_alignment_guard(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """The guard refuses any video shorter than the shots. In condensed
+    mode the video IS too short - that is the whole point. Running it
+    at all requires the caller to opt in explicitly via config.source."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 5.0)  # way too short
+    monkeypatch.setattr(footage, "extract_frames", lambda *a, **k: [b"\xff\xd8fake"])
+
+    config = footage.FootageConfig(source="condensed_rallies")
+
+    # Nothing to assert on the retrieval path yet - just that reaching
+    # this point does not raise FootageAlignmentError, which is the gate
+    # the condensed mode is built to bypass honestly.
+    pipeline.verify_footage(
+        _RetrievalClient(found=False),
+        json_path,
+        [tmp_path / "video.mp4"],
+        footage_config=config,
+        frame_source=_no_frames,
+    )
+
+
+def test_condensed_mode_not_found_marks_not_in_footage_and_leaves_the_flag(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """The honesty rule: when retrieval cannot find a rally, the point
+    is reported as "not in this footage" and left flagged for a human.
+    The judge call never runs, and nothing fabricates an outcome."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 5.0)
+    monkeypatch.setattr(footage, "extract_frames", lambda *a, **k: [b"\xff\xd8fake"])
+    config = footage.FootageConfig(source="condensed_rallies")
+
+    client = _RetrievalClient(found=False)
+    summary = pipeline.verify_footage(
+        client,
+        json_path,
+        [tmp_path / "video.mp4"],
+        footage_config=config,
+        frame_source=_no_frames,
+    )
+
+    assert summary.not_in_footage > 0
+    assert summary.agreed == 0
+    assert summary.checked == 0, "no judge call must have run"
+    record = load_pending(json_path)
+    flagged = [p for s in record.sets for p in s.points if p.footage_check]
+    assert flagged, "at least one point must carry the not_in_footage context"
+    assert all(p.needs_review for p in flagged), "not_in_footage never clears the flag"
+    assert flagged[0].footage_check["verdict"] == "not_in_footage"
+
+
+def test_condensed_mode_found_then_judged_can_still_auto_confirm(
+    timed_xlsx, import_config, tmp_path, monkeypatch
+):
+    """When retrieval finds a rally, the judge call runs on frames seeked
+    to the located offset. Agreement there still auto-confirms, exactly
+    like full-mode - the condensed path does not loosen the two-source bar."""
+    pipeline = SwingVisionImportPipeline(import_config)
+    json_path = _stage_timed(pipeline, timed_xlsx)
+    monkeypatch.setattr(footage, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(footage, "probe_duration", lambda *a, **k: 100.0)
+    monkeypatch.setattr(footage, "extract_frames", lambda *a, **k: [b"\xff\xd8fake"])
+    config = footage.FootageConfig(source="condensed_rallies")
+
+    # The stub xlsx's recorded end_type is "winner" for every point; the
+    # judge fake returns the same, so compare() will auto-confirm once the
+    # server/at-net consistency checks pass.
+    client = _RetrievalClient(found=True, judge_outcome="winner")
+    summary = pipeline.verify_footage(
+        client,
+        json_path,
+        [tmp_path / "video.mp4"],
+        footage_config=config,
+        frame_source=_no_frames,
+    )
+
+    # The retrieval path produces location + judge calls; each retrieval
+    # miss would have contributed to not_in_footage instead.
+    assert summary.checked > 0, "at least one point must reach the judge"
+    assert summary.not_in_footage == 0

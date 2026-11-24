@@ -6,7 +6,7 @@ import pytest
 
 from ai.client import SpecialistError, call_specialist, strip_markdown_fence
 from ai.config import AICoachConfig
-from ai.records import DrillItem, FitnessItem
+from ai.records import FitnessItem, PracticeIdeaItem
 from tests.ai.conftest import (
     FakeAnthropicClient,
     FakeMessage,
@@ -26,19 +26,32 @@ def test_call_specialist_parses_a_valid_strategy_response():
     assert items[0].supporting_stat.stat == "FS%"
 
 
-def test_call_specialist_parses_drill_specific_fields():
+def test_call_specialist_parses_practice_idea_specific_fields():
     client = FakeAnthropicClient()
 
-    items = call_specialist(client, AICoachConfig(), "drill", "You are a drill designer.")
+    items = call_specialist(
+        client,
+        AICoachConfig(),
+        "practice_idea",
+        "You suggest practice ideas a player could try",
+    )
 
-    assert isinstance(items[0], DrillItem)
-    assert items[0].drill_name == "Cross-court consistency"
+    assert isinstance(items[0], PracticeIdeaItem)
+    assert items[0].practice_name == "Cross-court consistency"
+    # Prescriptive-frequency fields are gone from the data model; what
+    # replaces them is a one-sentence "how to try it" suggestion.
+    assert "deep cross-court" in items[0].how_to_try
 
 
 def test_call_specialist_parses_fitness_specific_fields():
     client = FakeAnthropicClient()
 
-    items = call_specialist(client, AICoachConfig(), "fitness", "You are a conditioning coach.")
+    items = call_specialist(
+        client,
+        AICoachConfig(),
+        "fitness",
+        "You surface physical and mental patterns worth noticing",
+    )
 
     assert isinstance(items[0], FitnessItem)
     assert items[0].focus_area == "endurance"

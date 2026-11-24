@@ -103,20 +103,49 @@ Order-based matching ("the k-th clip is the k-th point") is therefore
 unsafe, and no amount of alignment accuracy fixes it - the points are not
 in the file.
 
+## User-confirmed ground truth (2026-11-23)
+
+SwingVision offers only two video exports: a single rally, or "all rallies
+of the match." The second produced the file above. For the 2026-08-21
+match, the "all rallies" count is **123**. This replaces the ~80 estimate
+from the serve-width detector, which under-counted because the overlay
+label can persist across short gaps between adjacent rallies.
+
+**No full-match export is possible** from SwingVision - the rallies-only
+cut is the only video they hand back. Clearing the rally filter is not
+an option the app offers.
+
+The authoritative numbers for this match:
+
+| | |
+|---|---|
+| sheet points with shots | 176 |
+| rallies in the condensed video | **123** |
+| coverage ceiling | **~70%** |
+| structurally absent | 53 points (~30%) - the serve/return-decided ones |
+
+The 70% ceiling is a property of SwingVision's export format, not of this
+code. It cannot be lifted.
+
 ## Where this leaves it
 
-1. **The full recording makes all of this unnecessary.** `Video Time`
-   indexes it directly, confirmed previously at zero drift over 180 points.
-   Worth establishing whether SwingVision can export it at all.
-2. **Failing that**, the condensed export can still verify the points it
-   does contain, but the ceiling is ~45% of points and the missing 55% are
-   not a random slice - they are the serve- and return-decided ones. The
-   workable design is content-addressed retrieval rather than time
-   alignment: for a flagged point, search a +/-30s window for the segment
-   whose label sequence matches the sheet's, and report "not present in
-   this footage" when nothing matches. That degrades honestly, and the
-   serve-decided points stay flagged for a human - which is the correct
-   outcome, not a failure.
+The condensed export is the only source available, and the right path is
+content-addressed retrieval - **built in 5.6.0 as `source="condensed_rallies"`**
+on `FootageConfig`, with `locate_point_in_condensed()` doing the retrieval
+and the pipeline skipping `check_alignment()` only when the caller has
+opted in explicitly. A point whose rally the retrieval call does not
+locate is marked `"not_in_condensed_footage"` and stays `needs_review=True`
+- never judged on frames from the wrong rally. The summary reports
+"X of Y points played verified; Z not in this footage", so the number has
+a denominator every time it is shown.
+
+A sample run of 10 flagged points (spread across the match) on
+`claude-opus-5` is held pending an `ANTHROPIC_API_KEY` refresh (the
+current key returns 401). Projected cost is under $1 for the sample based
+on token sizes measured in the retrieval prompt, with the full 173-point
+sweep projected to land near $5-$10 if retrieval hit rate matches the
+~70% coverage ceiling (hits cost a retrieval call plus a judge call;
+misses cost only the retrieval call).
 
 ## Identifying the tracked player
 

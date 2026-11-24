@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai.records import CoachingItem, CoachingReport, DrillItem, FitnessItem, SupportingStat
+from ai.records import (
+    CoachingItem,
+    CoachingReport,
+    FitnessItem,
+    PracticeIdeaItem,
+    SupportingStat,
+)
 from reports.config import ReportConfig
 from reports.render import (
     render_history_report,
@@ -23,13 +29,19 @@ def _sample_report() -> CoachingReport:
         generated_at="2026-08-06T12:00:00+00:00",
         model="claude-sonnet-5",
         strategy=[CoachingItem("strategy", "obs", "Attack the second serve", _stat(), "high")],
-        drills=[
-            DrillItem(
-                "drill", "obs", "Cross-court rally drill", _stat(), "medium", "CC Rally", "3x/week"
+        practice_ideas=[
+            PracticeIdeaItem(
+                "practice_idea",
+                "obs",
+                "Cross-court rally idea",
+                _stat(),
+                "medium",
+                "CC Rally",
+                "trade cross-court shots until one breaks down",
             )
         ],
         fitness=[
-            FitnessItem("fitness", "obs", "Add sprint intervals", _stat(), "low", "endurance")
+            FitnessItem("fitness", "obs", "Notice sprint recovery", _stat(), "low", "endurance")
         ],
     )
 
@@ -60,19 +72,22 @@ def test_render_match_report_includes_net_section_when_net_approaches_exist(samp
 def test_render_match_report_omits_coaching_sections_without_a_report(sample_match_stats):
     html_text = render_match_report(sample_match_stats, coaching_report=None)
 
-    assert "Improvement Plan" not in html_text
-    assert "<h2>Strategy</h2>" not in html_text
+    assert "Tips from this match" not in html_text
+    assert "<h2>Strategy tips</h2>" not in html_text
 
 
 def test_render_match_report_includes_all_three_coaching_sections(sample_match_stats):
     html_text = render_match_report(sample_match_stats, coaching_report=_sample_report())
 
     assert "Attack the second serve" in html_text
-    assert "Cross-court rally drill" in html_text
+    assert "Cross-court rally idea" in html_text
     assert "CC Rally" in html_text
-    assert "Add sprint intervals" in html_text
+    assert "Notice sprint recovery" in html_text
     assert "endurance" in html_text
-    assert "Improvement Plan" in html_text
+    # The whole section is framed as "tips", not as a prescribed plan.
+    assert "Tips from this match" in html_text
+    assert "<h2>Practice ideas</h2>" in html_text
+    assert "<h2>Fitness tips</h2>" in html_text
 
 
 def test_render_match_report_escapes_free_text_from_the_database():

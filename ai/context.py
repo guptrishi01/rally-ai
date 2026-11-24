@@ -2,6 +2,11 @@
 
 No LLM involved here — this is pure data assembly, so the same match always
 produces the same context regardless of how many times it's built.
+
+Despite the `CoachContext` name, the context is used for generating **tips
+from the match's own numbers**, not for emulating a coach. The name is
+kept because every import site in `ai/` uses it; see
+feedback-tips-not-coach in memory for the framing rule.
 """
 
 from __future__ import annotations

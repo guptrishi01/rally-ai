@@ -161,6 +161,12 @@ class RawShotRow:
     video_time: float | None = None
     hit_side: str | None = None
     source_part: int = 0
+    # Spin and speed are only read by footage retrieval; they give the
+    # shot a content-addressable fingerprint when seeking into the
+    # condensed rallies-only export. None when a sheet doesn't carry
+    # them (older exports or sheets where they are blank).
+    spin: str | None = None
+    speed_mph: float | None = None
 
 
 @dataclass

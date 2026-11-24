@@ -1,13 +1,17 @@
-"""Generates the Journal tab's single Mouratoglou-style coaching response.
+"""Generates the Journal tab's single reflection on one match.
 
 Distinct from AICoachPipeline (pipeline.py): that's 3 parallel specialists
-producing structured strategy/drill/fitness items; this is one voice
-responding directly to the player's own freshly-written journal entry, in
-prose. Same filesystem-cache pattern as AICoachPipeline.generate() - one
-JSON file per match, gitignored, skipped on a re-request unless
-force=True. A cached response is also regenerated if the journal entry it
-was generated from has since changed, since serving stale feedback for an
-edited entry would be actively misleading, not just an unnecessary re-spend.
+producing structured tips; this is one voice responding in prose directly
+to the player's own freshly-written journal entry. Same filesystem-cache
+pattern as AICoachPipeline.generate() - one JSON file per match,
+gitignored, skipped on a re-request unless force=True. A cached response
+is also regenerated if the journal entry it was generated from has since
+changed, since serving stale feedback for an edited entry would be
+actively misleading, not just an unnecessary re-spend.
+
+Named `journal.py` because the file still answers the Journal tab's
+"ask the coach" button; the response itself is a reflection on one match,
+not a coaching replacement. See feedback-tips-not-coach in memory.
 """
 
 from __future__ import annotations
@@ -25,14 +29,14 @@ from stats.models import MatchStats
 from .client import AnthropicClientLike, extract_text, strip_markdown_fence
 from .config import AICoachConfig
 from .context import build_context
-from .prompts import coach_prompt
+from .prompts import journal_feedback_prompt
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class JournalFeedback:
-    """One match's cached Journal-tab coaching response.
+    """One match's cached Journal-tab reflection.
 
     Attributes:
         match_id: The match this feedback is for.
@@ -41,7 +45,7 @@ class JournalFeedback:
         journal_text: The journal entry this feedback was generated from -
             cached alongside the response so a later edit to the journal
             entry can be detected as stale (see generate_journal_feedback).
-        feedback: The coach's response.
+        feedback: The reflection text.
     """
 
     match_id: int
@@ -61,13 +65,13 @@ class JournalFeedback:
 
 
 class JournalFeedbackError(RuntimeError):
-    """Raised when generating Journal-tab coaching feedback fails.
+    """Raised when generating Journal-tab feedback fails.
 
     Covers both the API call itself failing (auth, rate limit, network —
     an `anthropic.APIError`) and a response that parses but doesn't match
     the expected shape — mirrors ai/client.py's SpecialistError in spirit,
     kept as its own type since this call site isn't one of the three
-    strategy/drill/fitness specialists.
+    strategy/practice-idea/fitness specialists.
 
     Attributes:
         raw_response: The raw text that failed to parse, or "" if the API
@@ -91,7 +95,7 @@ def generate_journal_feedback(
     config: AICoachConfig | None = None,
     force: bool = False,
 ) -> JournalFeedback:
-    """Generates (or loads a cached) Journal-tab coaching response.
+    """Generates (or loads a cached) Journal-tab reflection on one match.
 
     Args:
         stats: The match's derived-stats bundle (stats.queries.match_stats).
@@ -122,13 +126,13 @@ def generate_journal_feedback(
             return cached
 
     context = build_context(stats)
-    system_prompt = coach_prompt(context, journal_text)
+    system_prompt = journal_feedback_prompt(context, journal_text)
     try:
         response = client.messages.create(
             model=config.model,
             max_tokens=config.max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": "Give your coaching feedback now."}],
+            messages=[{"role": "user", "content": "Share your reflection now."}],
         )
     except anthropic.APIError as exc:
         raise JournalFeedbackError("", exc) from exc

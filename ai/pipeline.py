@@ -103,14 +103,14 @@ class AICoachPipeline:
         stats = match_stats(connection, match_id)
         shot_pattern_summary = _lookup_shot_pattern_summary(stats, self.config.pending_dir)
         context = build_context(stats, shot_pattern_summary)
-        strategy, drills, fitness = generate_all(client, self.config, context)
+        strategy, practice_ideas, fitness = generate_all(client, self.config, context)
 
         report = CoachingReport(
             match_id=match_id,
             generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
             model=self.config.model,
             strategy=strategy,
-            drills=drills,
+            practice_ideas=practice_ideas,
             fitness=fitness,
         )
 

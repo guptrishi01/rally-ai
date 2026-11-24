@@ -349,8 +349,8 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   Match <span className="num">#{finalizedMatchId}</span> is in your career stats.
                 </p>
                 <p className="lede mt-4 text-[15px]">
-                  Write the journal entry while it's fresh — the coach reads what you wrote, not
-                  just what the tracking saw.
+                  Write the journal entry while it's fresh — the reflection reads what you
+                  wrote, not just what the tracking saw.
                 </p>
                 <div className="mt-7 flex flex-wrap items-center gap-3">
                   <Magnetic>
@@ -486,7 +486,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   }
                 />
                 <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-dim)]">
-                  Read by the coach when it suggests a call on a flagged point, and shown back
+                  Read by Claude when it suggests a call on a flagged point, and shown back
                   to you during review. It never resolves a flag on its own.
                 </p>
               </label>

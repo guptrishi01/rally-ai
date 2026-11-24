@@ -23,7 +23,7 @@ _OPTIONAL_FIELDS: dict[str, frozenset[str]] = {
     "points": frozenset({"first_serve_in", "second_serve_in"}),
     # Only footage verification needs these; an older or trimmed export
     # without them still imports exactly as before.
-    "shots": frozenset({"video_time", "hit_side"}),
+    "shots": frozenset({"video_time", "hit_side", "spin", "speed_mph"}),
 }
 
 
@@ -299,6 +299,8 @@ class SwingVisionParser:
         for row in rows:
             if _cell(row, columns, "point_number") is None:
                 continue
+            spin_cell = _cell(row, columns, "spin")
+            speed_cell = _cell(row, columns, "speed_mph")
             shots.append(
                 RawShotRow(
                     point_number=int(_cell(row, columns, "point_number")),
@@ -309,6 +311,8 @@ class SwingVisionParser:
                     result=str(_cell(row, columns, "result")),
                     video_time=_as_float(_cell(row, columns, "video_time")),
                     hit_side=_as_side(_cell(row, columns, "hit_side")),
+                    spin=str(spin_cell) if spin_cell is not None else None,
+                    speed_mph=_as_float(speed_cell),
                 )
             )
         return shots
