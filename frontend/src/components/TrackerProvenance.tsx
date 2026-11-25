@@ -1,4 +1,11 @@
-import type { FieldProvenance, MatchTracking, PointTracking, ShotProvenance } from '../types'
+import type {
+  CameraSetup,
+  FieldProvenance,
+  MatchTracking,
+  PointTracking,
+  RetrainingSuggestion,
+  ShotProvenance,
+} from '../types'
 
 /** The tracker's word for a stroke it could not name with any confidence. */
 export const UNCLEAR_STROKE = 'Unclear'
@@ -71,6 +78,43 @@ export function MatchTrackingNote({ tracking }: { tracking: MatchTracking }) {
         {tracking.inferred_serves ? `; ${tracking.inferred_serves} serves were inferred, not seen` : ''}.
         Each point below says which of its values the tracker measured. None of it settles a point:
         every one still needs your decision.
+      </p>
+      {tracking.setup && <CameraSetupNote setup={tracking.setup} />}
+      {tracking.retraining && <RetrainingNote retraining={tracking.retraining} />}
+    </div>
+  )
+}
+
+/** The camera position's score and what it costs - shown before a match is trusted. */
+function CameraSetupNote({ setup }: { setup: CameraSetup }) {
+  return (
+    <div className="mt-3 border-t border-[var(--color-line)] pt-3" data-testid="tracker-setup">
+      <p className="eyebrow">Camera setup &middot; for information</p>
+      <p className="mt-1 text-[13px] leading-relaxed">{setup.headline}</p>
+      {setup.consequences.map((line) => (
+        <p key={line} className="mt-1 text-[12px] leading-relaxed text-[var(--color-dim)]">
+          {line}
+        </p>
+      ))}
+      {setup.reshoot && (
+        <p className="mt-1 text-[12px] leading-relaxed">
+          Filming from higher up, further back and centred behind the baseline would help most next
+          time.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Whether retraining the ball model on footage like this is suggested, and why. */
+function RetrainingNote({ retraining }: { retraining: RetrainingSuggestion }) {
+  return (
+    <div className="mt-3 border-t border-[var(--color-line)] pt-3" data-testid="tracker-retraining">
+      <p className="eyebrow">Ball model &middot; for information</p>
+      <p className="mt-1 text-[12px] leading-relaxed text-[var(--color-dim)]">
+        {retraining.recommended && retraining.note
+          ? retraining.note
+          : 'Retraining not suggested: this footage is within the conditions the ball detector was tuned on, and ball tracking was not weak.'}
       </p>
     </div>
   )

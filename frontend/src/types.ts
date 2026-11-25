@@ -255,6 +255,25 @@ export interface PointTracking {
   shots: ShotProvenance[]
 }
 
+/** The camera position's score and what it makes weak (calibrate.setup_advice). */
+export interface CameraSetup {
+  score: number
+  rating: 'good' | 'fair' | 'poor'
+  headline: string
+  consequences: string[]
+  reshoot: boolean
+  far_depth_m_per_px: number
+}
+
+/** Whether a ball model retrained on footage like this is suggested. Informational. */
+export interface RetrainingSuggestion {
+  recommended: boolean
+  note: string | null
+  conditions: string[]
+  weak_tracking: boolean
+  informational: true
+}
+
 export interface MatchTracking {
   notes: string[]
   shots: number | null
@@ -265,6 +284,8 @@ export interface MatchTracking {
   models: Record<string, unknown>
   video: string | null
   range: [number, number] | null
+  setup: CameraSetup | null
+  retraining: RetrainingSuggestion | null
 }
 
 /** The tracker's own latest progress report (TrackingProgress). */

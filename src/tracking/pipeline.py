@@ -53,7 +53,7 @@ import os
 import pickle
 import shutil
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from itertools import chain
 from pathlib import Path
@@ -68,6 +68,8 @@ from swingvision_import.records import MatchRecord
 from . import assemble as assemble_stage
 from . import ball as ball_stage
 from . import calibrate, court, models
+from . import conditions as conditions_stage
+from . import deadtime as deadtime_stage
 from . import events as events_stage
 from . import players as players_stage
 from . import strokes as strokes_stage
@@ -75,7 +77,9 @@ from . import video as video_stage
 from .assemble import MatchSetup, TrackedMatch, TrackingBlock
 from .ball import BallDetector, CandidateStream, SceneSampler, SceneStats, link_candidates
 from .calibrate import Calibration, CalibrationResult
-from .config import RetrainingConfig, TrackerConfig
+from .conditions import ConditionsReference
+from .config import PipelineConfig, RetrainingConfig, TrackerConfig
+from .deadtime import DeadTimePlan
 from .events import AudioOnsets, EventQuality, EventTrack
 from .players import PersonDetector, PlayerTracker, PlayerTracks
 from .segment import EXCLUDED
@@ -84,6 +88,7 @@ from .stitch import (
     ChunkWindow,
     CompactBallTrack,
     StitchedMatch,
+    decode_holes,
     merge_chunks,
     plan_chunks,
     pose_key,
@@ -222,6 +227,12 @@ class TrackerStages:
         frame_reader: (video, start, end, index) -> frames in order.
         video_loader: video -> `VideoSource` (header, PTS index, checksum).
         calibrator: (video, at) -> a `CalibrationResult`.
+        audio_curve_reader: video -> the whole recording's raw onset curve
+            (`deadtime.read_onset_curve`), or None without audio; used
+            only by the dead-time pre-pass.
+        alignment_judge: (video, current, candidate, start, end) ->
+            (current's, candidate's) `calibrate.line_alignment_px` on the
+            stretch's frames; decides whether a re-calibration is adopted.
     """
 
     person_detector: PersonDetector | None = None
@@ -236,6 +247,11 @@ class TrackerStages:
     )
     video_loader: Callable[[Path], VideoSource] | None = None
     calibrator: Callable[[Path, float], CalibrationResult] | None = None
+    audio_curve_reader: Callable[[Path], np.ndarray | None] | None = None
+    alignment_judge: (
+        Callable[[Path, Calibration, Calibration, float, float], tuple[float | None, float | None]]
+        | None
+    ) = None
 
 
 @dataclass
@@ -281,14 +297,20 @@ class TrackingProgress:
 class RetrainingAdvice:
     """Whether a ball model retrained on footage like this would help.
 
+    Informational only: it never blocks staging, review or finalize.
+
     Attributes:
         recommended: Whether to say so.
         weak_tracking: Whether ball or event tracking was weak.
-        conditions: How conditions differ from the daylight reference,
-            one phrase each; empty when they do not markedly.
+        conditions: How the footage differs from the reference the ball
+            detector was tuned on, one plain phrase each; empty when it
+            does not markedly (or could not be compared).
         measures: The numbers the decision was made on.
         note: The sentence for `import_notes`, or None.
-        provisional: Always True until a trained model sets a baseline.
+        provisional: Whether any threshold used was a fallback rather
+            than one derived from the measured reference.
+        compared: Whether conditions were compared with a reference at
+            all.
     """
 
     recommended: bool
@@ -296,7 +318,8 @@ class RetrainingAdvice:
     conditions: tuple[str, ...]
     measures: dict
     note: str | None
-    provisional: bool = True
+    provisional: bool = False
+    compared: bool = True
 
     def to_dict(self) -> dict:
         """Serialises to plain JSON-ready types.
@@ -309,34 +332,19 @@ class RetrainingAdvice:
         return out
 
 
-def _conditions(scene: SceneStats | None, config: RetrainingConfig) -> tuple[list[str], dict]:
-    """How the court's look differs from the reference footage."""
-    if scene is None:
-        return [], {"scene": None}
-    reference = config.reference_brightness
-    distance = float(np.linalg.norm(np.subtract(scene.court_rgb, config.reference_court_rgb)))
-    measures = {
-        "brightness": round(scene.brightness, 1),
-        "reference_brightness": reference,
-        "court_rgb": [round(v, 1) for v in scene.court_rgb],
-        "reference_court_rgb": list(config.reference_court_rgb),
-        "colour_distance": round(distance, 1),
-    }
-    found = []
-    if scene.brightness < config.dim_ratio * reference:
-        found.append(
-            f"night or dusk lighting: court brightness {scene.brightness:.0f} against "
-            f"{reference:.0f} in the daylight reference"
+def _weak_limits(
+    reference: ConditionsReference | None, config: RetrainingConfig
+) -> tuple[float, float, bool, dict | None]:
+    """Coverage and confidence floors: relative to the reference when measured."""
+    baseline = None if reference is None else reference.tracking
+    if baseline and baseline.get("rally_coverage") and baseline.get("rally_mean_confidence"):
+        return (
+            config.relative_coverage * float(baseline["rally_coverage"]),
+            config.relative_confidence * float(baseline["rally_mean_confidence"]),
+            False,
+            baseline,
         )
-    elif scene.brightness > config.bright_ratio * reference:
-        found.append(
-            f"much brighter light than the reference: court brightness {scene.brightness:.0f} "
-            f"against {reference:.0f}"
-        )
-    if distance > config.colour_distance:
-        rgb = ", ".join(f"{v:.0f}" for v in scene.court_rgb)
-        found.append(f"a court colour unlike the reference's (RGB {rgb})")
-    return found, measures
+    return config.weak_coverage, config.weak_confidence, True, None
 
 
 def retraining_advice(
@@ -345,11 +353,14 @@ def retraining_advice(
     events: EventQuality,
     scene: SceneStats | None,
     config: RetrainingConfig | None = None,
+    reference: ConditionsReference | None = None,
 ) -> RetrainingAdvice:
     """Decides whether to recommend retraining the ball model on this footage.
 
-    Never blocking: the result is an informational note. Every threshold
-    is provisional (`RetrainingConfig`).
+    Never blocking: the result is an informational note. The footage's
+    look is compared with the measured reference (`conditions.compare`),
+    and ball coverage with the reference's own measured coverage when it
+    has one.
 
     Args:
         ball: The run's ball state.
@@ -357,7 +368,10 @@ def retraining_advice(
             is judged, since most of a match is not play.
         events: The run's event quality, for how many results are unknown.
         scene: The run's court brightness and colour.
-        config: Thresholds and the daylight reference.
+        config: Margins and fallbacks.
+        reference: The conditions the detector was tuned on; None when
+            there is no reference (conditions are then not compared, and
+            the note says so).
 
     Returns:
         The advice, with the numbers it rests on.
@@ -367,16 +381,25 @@ def retraining_advice(
     frames, seen, confidence = ball.coverage_over(stretches)
     coverage = seen / frames if frames else 0.0
     weak_points = sum(ball.quality(start, end).weak for start, end in stretches)
+    floor, confidence_floor, fallback, baseline = _weak_limits(reference, config)
     reasons = []
-    if frames and (coverage < config.weak_coverage or confidence < config.weak_confidence):
+    if frames and (coverage < floor or confidence < confidence_floor):
+        against = (
+            f" against {float(baseline['rally_coverage']):.0%} and "
+            f"{float(baseline['rally_mean_confidence']):.2f} on the reference recording"
+            if baseline
+            else ""
+        )
         reasons.append(
-            f"a ball position in {coverage:.0%} of rally frames, mean confidence {confidence:.2f}"
+            f"a ball position in {coverage:.0%} of rally frames, mean confidence "
+            f"{confidence:.2f}{against}"
         )
     if stretches and weak_points / len(stretches) > config.weak_point_share:
         reasons.append(f"weak on {weak_points} of {len(stretches)} points")
     if events.shots and events.abstention_rate > config.max_abstention:
         reasons.append(f"no result for {events.abstention_rate:.0%} of shots")
-    conditions, measures = _conditions(scene, config)
+    check = conditions_stage.compare(scene, reference, config)
+    measures = dict(check.measures)
     measures.update(
         {
             "rally_frames": frames,
@@ -385,32 +408,51 @@ def retraining_advice(
             "weak_points": weak_points,
             "points": len(stretches),
             "result_abstention": round(events.abstention_rate, 3),
+            "coverage_floor": round(floor, 3),
+            "confidence_floor": round(confidence_floor, 3),
+            "weak_reasons": reasons,
         }
     )
     weak = bool(reasons)
-    caveat = " (Thresholds are provisional: no trained ball model exists yet to set a baseline.)"
-    if weak and conditions:
-        note = (
-            f"Ball tracking was weak on this match ({'; '.join(conditions)}; "
-            f"{'; '.join(reasons)}). Retraining the ball model on footage like this is "
-            "recommended." + caveat
+    found = list(check.conditions)
+    tail = " This is informational: nothing is blocked, and every point is reviewed as usual."
+    if fallback and weak:
+        tail = (
+            " The coverage thresholds are provisional fallbacks: the reference has no measured "
+            "tracking baseline." + tail
         )
+    if not check.compared and scene is not None:
+        tail = (
+            " The footage's lighting and court colour could not be compared: no conditions "
+            "reference is installed." + tail
+        )
+    if found:
+        lead = f"Retraining the ball model is suggested: {'; '.join(found)}."
+        if weak:
+            lead += f" Ball tracking was also weak here ({'; '.join(reasons)})."
+        else:
+            lead += (
+                " Ball tracking held up on this match, but the detector has not been tried in "
+                "these conditions before."
+            )
+        note = lead + tail
     elif weak:
         note = (
-            f"Ball tracking was weak on this match ({'; '.join(reasons)}), in conditions close "
-            "to the daylight reference footage. Retraining the ball model on footage like this "
-            "is recommended." + caveat
-        )
-    elif conditions:
-        note = (
-            "Conditions on this match differ markedly from the daylight reference footage "
-            f"({'; '.join(conditions)}). Ball tracking held up here, but retraining on footage "
-            "like this is recommended before relying on it in these conditions." + caveat
+            f"Ball tracking was weak on this match ({'; '.join(reasons)}), although the lighting "
+            "and court colour are within the range the ball detector was tuned on. A ball model "
+            "trained on more footage like this would help." + tail
         )
     else:
         note = None
-    measures["weak_reasons"] = reasons
-    return RetrainingAdvice(note is not None, weak, tuple(conditions), measures, note)
+    return RetrainingAdvice(
+        recommended=note is not None,
+        weak_tracking=weak,
+        conditions=tuple(found),
+        measures=measures,
+        note=note,
+        provisional=fallback,
+        compared=check.compared,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -586,6 +628,8 @@ class _Run:
         ball_name: That detector's name.
         notes: Run notes gathered on the way, for `import_notes`.
         resumed: Indexes of chunks taken from checkpoints.
+        dead_time: The dead-time pre-pass's plan, or None when it did not
+            run (or heard nothing to plan from).
     """
 
     video: Path
@@ -602,6 +646,27 @@ class _Run:
     ball_name: str
     notes: list[str] = field(default_factory=list)
     resumed: set[int] = field(default_factory=set)
+    dead_time: DeadTimePlan | None = None
+
+
+@dataclass(frozen=True)
+class ChunkCalibration:
+    """The calibration a chunk is tracked with, and how it was chosen (internal).
+
+    Attributes:
+        calibration: The calibration to use.
+        drift_px: How far the court had moved from the run's own
+            calibration at the chunk's start, or None when not measured.
+        checked: Whether a re-calibration was attempted.
+        recalibrated: Whether a re-calibration was adopted.
+        alignment_px: (in use, re-calibration) line alignment, when judged.
+    """
+
+    calibration: Calibration
+    drift_px: float | None
+    checked: bool
+    recalibrated: bool = False
+    alignment_px: tuple[float | None, float | None] | None = None
 
 
 def _slug(text: str) -> str:
@@ -673,6 +738,36 @@ class TrackerPipeline:
         """Runs the event rules (or the injected stand-in)."""
         detector = self.stages.event_detector or events_stage.detect_events
         return detector(*args)
+
+    def _dead_time(self, video: Path, start: float, end: float) -> DeadTimePlan | None:
+        """Runs the dead-time pre-pass over the run."""
+        reader = self.stages.audio_curve_reader or deadtime_stage.read_onset_curve
+        plan = deadtime_stage.plan_dead_time(reader(video), start, end, self.config.dead_time)
+        if plan is not None:
+            logger.info(
+                "Dead-time pre-pass: skipping %.0fs of %.0fs in %d stretch(es).",
+                plan.skipped_seconds,
+                end - start,
+                len(plan.dead),
+            )
+        return plan
+
+    def _judge_alignment(
+        self, video: Path, current: Calibration, candidate: Calibration, start: float, end: float
+    ) -> tuple[float | None, float | None]:
+        """How well each calibration lies on the court lines of a stretch's frames."""
+        if self.stages.alignment_judge is not None:
+            return self.stages.alignment_judge(video, current, candidate, start, end)
+        count = max(1, self.config.pipeline.alignment_frames)
+        step = (end - start) / (count + 1)
+        frames = video_stage.frames_at(
+            video, [start + step * (k + 1) for k in range(count)], config=self.config.video
+        )
+        median = court.median_frame([frame.image for frame in frames])
+        return (
+            calibrate.line_alignment_px(current, median, self.config),
+            calibrate.line_alignment_px(candidate, median, self.config),
+        )
 
     def work_folder(self, source: VideoSource, start: float, end: float) -> Path:
         """Names a run's checkpoint folder.
@@ -843,6 +938,8 @@ class TrackerPipeline:
             "ball_detector": run.ball_name,
             "pose": None if run.pose is None else run.pose.name,
             "check_drift": config.pipeline.check_drift,
+            "recalibrate": [config.pipeline.recalibrate, config.pipeline.recalibrate_px],
+            "dead_time": None if run.dead_time is None else run.dead_time.to_dict(),
         }
         text = json.dumps(parts, sort_keys=True, default=str)
         return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -986,6 +1083,22 @@ class TrackerPipeline:
         if calibration is None:
             calibration = self._calibration(video, source, at, keypoints)
         person, pose, notes = self._models(calibration)
+        plan = None
+        if self.config.dead_time.enabled:
+            report(
+                TrackingProgress(
+                    "calibrating",
+                    len(windows),
+                    video_seconds=run_end - run_start,
+                    message="Listening for stretches with no play (dead-time pre-pass).",
+                )
+            )
+            plan = self._dead_time(video, run_start, run_end)
+            if plan is None:
+                notes.append(
+                    "The dead-time pre-pass was asked for but the recording's audio gave it "
+                    "nothing to go on, so the whole run was tracked."
+                )
         ball_factory = self.stages.ball_detector or (
             lambda cal, fps: ball_stage.MotionBallDetector(cal, self.config.ball, fps)
         )
@@ -1003,6 +1116,7 @@ class TrackerPipeline:
             ball_factory=ball_factory,
             ball_name=ball_factory(calibration, source.info.nominal_fps).name,
             notes=notes,
+            dead_time=plan,
         )
         manifest = self._manifest(run)
         self._check_manifest(run, manifest)
@@ -1112,19 +1226,40 @@ class TrackerPipeline:
         """Tracks one chunk: players, ball, events and poses."""
         config = self.config
         began = time.perf_counter()
-        calibration = run.calibration
+        current = run.calibration
+        if previous is not None and previous.calibration is not None:
+            current = previous.calibration
+        check = self._chunk_calibration(run, window, current)
+        calibration = check.calibration
         if previous is None:
             tracker = PlayerTracker(run.person, calibration, config.players)
         else:
             tracker = PlayerTracker.resume(previous.tracker_state, run.person)
+            tracker.recalibrate(calibration)
         detector = run.ball_factory(calibration, run.source.info.nominal_fps)
         stream = CandidateStream(detector)
         sampler = SceneSampler(calibration, config.ball.scene_sample_stride)
+        plan = run.dead_time
         found = []
         core = state = swaps = None
+        owned: list[float] = []
+        skipped = 0
+        live = True
         for frame in self._frames(run.video, window.read_start, window.read_end, run.source.index):
+            mine = window.owns(frame.pts)
+            if mine:
+                owned.append(frame.pts)
+            if plan is not None and not plan.is_active(frame.pts):
+                skipped += mine
+                if live:
+                    # No frame difference is taken across a skipped stretch.
+                    found.extend(stream.finish())
+                    stream = CandidateStream(detector)
+                    live = False
+                continue
+            live = True
             if frame.pts >= window.start:
-                if not window.owns(frame.pts) and core is None:
+                if not mine and core is None:
                     core, state, swaps = _hand_over(tracker)
                 tracker.update(frame)
                 if core is None:
@@ -1166,8 +1301,10 @@ class TrackerPipeline:
         margin = config.pipeline.stitch_margin_seconds
         hits = tuple(h for h in events.hits if window.keeps(h.pts, margin))
         poses = self._poses(run, events, {pose_key(h.pts) for h in hits}, local)
-        drift, checked = self._drift(run, window)
-        result = ChunkResult(
+        expected, holes = decode_holes(
+            run.source.index, window, owned, config.pipeline.decode_hole_frames
+        )
+        return ChunkResult(
             window=window,
             hits=hits,
             bounces=tuple(b for b in events.bounces if window.keeps(b.pts, margin)),
@@ -1183,13 +1320,19 @@ class TrackerPipeline:
             poses=poses,
             scene=sampler.result(),
             discarded_kinks=events.discarded_kinks,
-            drift_px=drift,
-            drift_checked=checked,
+            drift_px=check.drift_px,
+            drift_checked=check.checked,
             seconds=time.perf_counter() - began,
             tracker_state=state,
             detector_name=tracker.detector_name,
+            calibration=calibration,
+            recalibrated=check.recalibrated,
+            alignment_px=check.alignment_px,
+            decoded_frames=len(owned),
+            expected_frames=expected,
+            decode_holes=holes,
+            skipped_frames=skipped,
         )
-        return result
 
     def _poses(
         self,
@@ -1221,19 +1364,53 @@ class TrackerPipeline:
         by_index = {shot.index: pose_key(shot.hit.pts) for shot in shots}
         return {by_index[index]: samples for index, samples in found.items()}
 
-    def _drift(self, run: _Run, window: ChunkWindow) -> tuple[float | None, bool]:
-        """Re-calibrates at a chunk's start and measures how far the court moved."""
-        if not self.config.pipeline.check_drift or window.index == 0:
-            return None, False
+    def _chunk_calibration(
+        self, run: _Run, window: ChunkWindow, current: Calibration
+    ) -> ChunkCalibration:
+        """Re-calibrates at a chunk's start; adopts the result if it fits better.
+
+        The run's first chunk keeps the run's calibration. Every later one
+        is re-calibrated (when `check_drift`); `drift_px` is measured
+        against the run's own calibration. When the court has moved
+        further than `recalibrate_px` from the calibration in use, both
+        are laid over frames from the middle of the chunk and the one
+        whose lines sit closer to the painted lines is used - so a wrong
+        re-calibration is never adopted just for being new.
+        """
+        pipeline = self.config.pipeline
+        if not pipeline.check_drift or window.index == 0:
+            return ChunkCalibration(current, None, False)
         try:
             result = self._calibrate_at(run.video, window.start)
         except video_stage.VideoError as error:
             logger.warning("Re-calibration at %.1fs failed: %s", window.start, error)
-            return None, True
+            return ChunkCalibration(current, None, True)
         if not result.ok:
-            return None, True
-        return calibrate.drift_px(run.calibration, result.calibration), True
-
+            return ChunkCalibration(current, None, True)
+        candidate = result.calibration
+        drift = calibrate.drift_px(run.calibration, candidate)
+        moved = calibrate.drift_px(current, candidate)
+        if not pipeline.recalibrate or moved <= pipeline.recalibrate_px:
+            return ChunkCalibration(current, drift, True)
+        try:
+            before, after = self._judge_alignment(
+                run.video, current, candidate, window.start, window.end
+            )
+        except video_stage.VideoError as error:
+            logger.warning("Could not judge the re-calibration at %.1fs: %s", window.start, error)
+            return ChunkCalibration(current, drift, True, False, (None, None))
+        adopt = before is not None and after is not None and after < before
+        logger.info(
+            "Chunk at %.0fs: court moved %.1fpx; line alignment %s -> %s px; %s.",
+            window.start,
+            moved,
+            before,
+            after,
+            "re-calibrated" if adopt else "kept the calibration in use",
+        )
+        return ChunkCalibration(
+            candidate if adopt else current, drift, True, adopt, (before, after)
+        )
 
     # ------------------------------------------------------------------
     # One match from the chunks, staged
@@ -1307,6 +1484,7 @@ class TrackerPipeline:
             tracked.segmentation.events.quality(),
             stitched.scene,
             config.retraining,
+            conditions_stage.load_reference(config.retraining.reference_path),
         )
         record.tracking = self._block(run, chunks, setup, tracked, stitched, advice)
         importer = SwingVisionImportPipeline(self.import_config)
@@ -1342,7 +1520,6 @@ class TrackerPipeline:
     ) -> list[str]:
         """The tracker's import notes, most important first."""
         config = self.config.pipeline
-        info = run.source.info
         first, last = float(run.source.index.pts[0]), float(run.source.index.pts[-1])
         notes = [
             f"Staged by the independent tracker from {run.video.name}, not from a SwingVision "
@@ -1356,7 +1533,11 @@ class TrackerPipeline:
             )
         if advice.note is not None:
             notes.append(advice.note)
-        notes.extend(tracked.notes)
+        setup = calibrate.setup_advice(run.calibration.quality, self.config.calibration)
+        notes.append(setup.note())
+        # The setup note says what these calibration warnings say, and more.
+        covered = {w for w in run.calibration.quality.warnings if "far baseline" in w}
+        notes.extend(note for note in tracked.notes if note not in covered)
         notes.extend(run.notes)
         if len(run.windows) > 1:
             report = stitched.report
@@ -1367,24 +1548,8 @@ class TrackerPipeline:
                 f"{report.dropped_unowned} seen only by the chunk with less context were left "
                 "out."
             )
-        moved = [
-            (chunk.window, chunk.drift_px)
-            for chunk in chunks
-            if chunk.drift_px is not None and chunk.drift_px > config.drift_warn_px
-        ]
-        if moved:
-            worst = max(px for _, px in moved)
-            notes.append(
-                f"The court moved in the picture by up to {worst:.0f}px (from about "
-                f"{moved[0][0].start:.0f}s): the camera was bumped or slipped. Positions, "
-                "bounces and line calls after that are off - the tracker does not re-calibrate "
-                "mid-match."
-            )
-        if info.is_vfr:
-            notes.append(
-                f"{run.video.name} drops frames now and then; real frame timestamps were used "
-                "throughout, so times and speeds allow for it."
-            )
+        notes.extend(_drift_notes(chunks, config))
+        notes.extend(_footage_notes(run, chunks, tracked, self.config))
         return notes
 
     def _block(
@@ -1405,6 +1570,12 @@ class TrackerPipeline:
                 "seconds": round(chunk.seconds, 2),
                 "resumed": chunk.window.index in run.resumed,
                 "drift_px": chunk.drift_px,
+                "recalibrated": chunk.recalibrated,
+                "alignment_px": None if chunk.alignment_px is None else list(chunk.alignment_px),
+                "decoded_frames": chunk.decoded_frames,
+                "expected_frames": chunk.expected_frames,
+                "decode_holes": [list(hole) for hole in chunk.decode_holes],
+                "skipped_frames": chunk.skipped_frames,
             }
             for chunk in chunks
         ]
@@ -1439,6 +1610,16 @@ class TrackerPipeline:
                 "calibration": run.calibration.to_dict(),
                 "scene": None if stitched.scene is None else stitched.scene.to_dict(),
                 "retraining": advice.to_dict(),
+                "camera_setup": calibrate.setup_advice(
+                    run.calibration.quality, self.config.calibration
+                ).to_dict(),
+                "dead_time": None if run.dead_time is None else run.dead_time.to_dict(),
+                "frame_gaps": [
+                    [round(a, 4), round(b, 4)]
+                    for a, b in _frame_gaps(
+                        run.source.index, run.start, run.end, self.config.ball.max_gap_seconds
+                    )[1]
+                ][:500],
                 "models": {
                     "person": run.person.name,
                     "pose": None if run.pose is None else run.pose.name,
@@ -1456,6 +1637,128 @@ class TrackerPipeline:
             }
         )
         return block
+
+
+def _drift_notes(chunks: Sequence[ChunkResult], config: PipelineConfig) -> list[str]:
+    """What the camera moving mid-match did, and what was done about it."""
+    moved = [c for c in chunks if c.drift_px is not None and c.drift_px > config.drift_warn_px]
+    adopted = [c for c in chunks if c.recalibrated]
+    judged = [c for c in chunks if c.alignment_px is not None and not c.recalibrated]
+    refused = [c for c in judged if None not in c.alignment_px]
+    unjudged = [c for c in judged if None in c.alignment_px]
+    if not moved and not adopted:
+        return []
+    shifts = [c.drift_px for c in moved + adopted]
+    since = min(c.window.start for c in moved + adopted)
+    text = (
+        f"The court moved in the picture by up to {max(shifts):.0f}px from where "
+        f"it was first calibrated (from about {since:.0f}s): the camera crept, was bumped or "
+        "slipped."
+    )
+    if adopted:
+        shown = "; ".join(
+            f"{c.window.start:.0f}s ({c.alignment_px[0]:.2f}px -> {c.alignment_px[1]:.2f}px)"
+            for c in adopted[:8]
+        )
+        more = f" and {len(adopted) - 8} more" if len(adopted) > 8 else ""
+        text += (
+            f" The tracker re-calibrated at {len(adopted)} chunk start(s) where a fresh "
+            "calibration lay closer to the painted lines (mean distance from them, before -> "
+            f"after: {shown}{more})."
+        )
+    if refused:
+        text += (
+            f" At {len(refused)} chunk start(s) a fresh calibration fitted no better and was not "
+            "used."
+        )
+    if unjudged:
+        text += (
+            f" At {len(unjudged)} chunk start(s) a fresh calibration could not be checked "
+            "against the footage, so it was not used."
+        )
+    if not adopted:
+        if not config.recalibrate:
+            why = "re-calibration is turned off"
+        elif refused or unjudged:
+            why = "no fresh calibration was shown to fit better"
+        else:
+            why = f"each move was within the {config.recalibrate_px:.0f}px re-calibration threshold"
+        text += (
+            f" The calibration was not replaced ({why}), so positions, bounces and line calls "
+            "after that may be off by up to that much."
+        )
+    return [text]
+
+
+def _frame_gaps(
+    index: PtsIndex, start: float, end: float, longer: float
+) -> tuple[float, list[tuple[float, float]]]:
+    """Dropped-frame gaps within a stretch that the ball track cannot bridge.
+
+    A gap counts when it is longer than `longer` seconds and also longer
+    than twice the recording's usual frame interval - so a low frame rate
+    is never mistaken for dropped frames.
+
+    Returns:
+        (the threshold used, the gaps as (before, after) timestamps).
+    """
+    pts = np.asarray(index.pts)
+    inside = pts[(pts >= start) & (pts <= end)]
+    gaps = np.diff(inside)
+    usual = float(np.median(np.diff(pts))) if len(pts) > 1 else 0.0
+    threshold = max(longer, 2.0 * usual)
+    where = np.flatnonzero(gaps > threshold)
+    return threshold, [(float(inside[k]), float(inside[k + 1])) for k in where]
+
+
+def _footage_notes(
+    run: _Run, chunks: Sequence[ChunkResult], tracked: TrackedMatch, config: TrackerConfig
+) -> list[str]:
+    """What was wrong with the file itself, and what the pre-pass skipped."""
+    notes = []
+    info = run.source.info
+    index = run.source.index
+    first, last = float(index.pts[0]), float(index.pts[-1])
+    if info.duration - (last - first) > config.video.truncation_seconds:
+        notes.append(
+            f"{run.video.name}'s header says it runs {info.duration:.0f}s but its frames stop at "
+            f"{last - first:.0f}s: the file looks cut short (an interrupted recording or copy). "
+            f"Only the {last - first:.0f}s that is there was tracked."
+        )
+    holes = [hole for chunk in chunks for hole in chunk.decode_holes]
+    if holes:
+        frames = sum(h[2] for h in holes)
+        shown = ", ".join(f"{a:.1f}-{b:.1f}s" for a, b, _ in holes[:6])
+        more = f" and {len(holes) - 6} more" if len(holes) > 6 else ""
+        notes.append(
+            f"{frames} frame(s) in {len(holes)} stretch(es) could not be decoded ({shown}{more}): "
+            "the file is damaged there. Nothing was tracked in them, so any shot inside one is "
+            "missing rather than guessed."
+        )
+    longer, gaps = _frame_gaps(index, run.start, run.end, config.ball.max_gap_seconds)
+    playing = [a for a in tracked.segmentation.attempts if a.kind != EXCLUDED]
+    hit = sorted(
+        {a.number for a in playing for g0, g1 in gaps if g0 < a.end + 0.5 and g1 > a.start - 0.5}
+    )
+    if hit:
+        worst = max(g1 - g0 for g0, g1 in gaps)
+        shown = ", ".join(str(n) for n in hit[:15]) + (" and more" if len(hit) > 15 else "")
+        notes.append(
+            f"The recording drops frames: {len(gaps)} gap(s) longer than {longer:.2f}s (the "
+            f"longest {worst:.2f}s) - longer than the ball track bridges - and some fall inside "
+            f"the play of {len(hit)} point(s) (point numbers {shown}). A hit or bounce during "
+            "one can be missed; real frame timestamps were used, so times and speeds allow for "
+            "the gaps."
+        )
+    elif info.is_vfr:
+        notes.append(
+            f"{run.video.name} drops frames now and then; real frame timestamps were used "
+            "throughout, so times and speeds allow for it, and no gap long enough to break the "
+            "ball track fell inside a point."
+        )
+    if run.dead_time is not None:
+        notes.append(run.dead_time.note())
+    return notes
 
 
 def _write_progress(path: Path, progress: TrackingProgress) -> None:

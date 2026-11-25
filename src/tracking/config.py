@@ -35,12 +35,15 @@ class VideoConfig:
         checksum_chunk_bytes: Read size used when hashing the file.
         decode_timeout_seconds: How long to wait for ffmpeg to exit after
             its output has been consumed, before it is killed.
+        truncation_seconds: A file whose frames stop this much short of
+            the duration its header declares is reported as cut short.
     """
 
     reject_vfr: bool = False
     vfr_jitter: float = 0.15
     checksum_chunk_bytes: int = 4 * 1024 * 1024
     decode_timeout_seconds: float = 30.0
+    truncation_seconds: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,8 @@ class ModelConfig:
         person_model: Name of the pinned person-detector entry in
             `tracking.models.REGISTRY`.
         pose_model: Name of the pinned pose-model entry there.
+        ball_model: Name of the learned ball model's entry there (Track
+            B); used only when a learned ball detector is asked for.
         weights_dir: Folder weights are downloaded to and loaded from, or
             None for a per-user cache folder **outside the repository**
             (`tracking.models.default_weights_dir`). Weights are never
@@ -225,6 +230,7 @@ class ModelConfig:
 
     person_model: str = "yolo11n"
     pose_model: str = "yolo11n-pose"
+    ball_model: str = "ball-heatmap-v0"
     weights_dir: Path | None = None
     verify_checksum: bool = True
 
@@ -805,42 +811,98 @@ class AssembleConfig:
 class RetrainingConfig:
     """When to tell the user a ball model retrained on their footage would help.
 
-    **Every threshold here is provisional.** No trained ball model exists
-    yet, so there is no measured baseline for "tracking as good as it gets";
-    the values below are set against what the classic detector did on the
-    one real recording (a daylight hard court) and are to be revisited once
-    a learned model and more recordings exist.
+    Two separate questions, each answered against a **measured** reference
+    (`tracking.conditions.ConditionsReference`, stored at
+    `reference_path`; docs/ball-model-training.md records how it was
+    measured):
+
+    1. *Does this footage look unlike what the detector was tuned on?* A
+       run is outside the reference when its court brightness lies beyond
+       the whole reference match's range, or its court colour
+       (chromaticity) further from the reference's than any reference
+       frame was, by more than the larger of `sigmas` times the
+       reference's own spread and a floor. The `sigmas` margin is
+       measured; the floors are a judgement - no footage in other
+       conditions exists yet to show where the detector starts failing.
+    2. *Was the ball tracked worse than on the reference footage?* Rally
+       coverage below `relative_coverage` times the reference's measured
+       rally coverage. With no measured baseline the absolute
+       `weak_coverage` / `weak_confidence` fallbacks apply, and the note
+       says they are provisional.
 
     Attributes:
-        reference_brightness: Mean court-surface luminance (0..255) of the
-            daylight reference footage. Provisional: measured by the
-            Phase 6 real-footage run over 355-600s of the 2026-08-21
-            recording.
-        reference_court_rgb: Mean court-surface (R, G, B) of that footage.
-        dim_ratio: A court darker than this fraction of the reference's
-            brightness is "dim lighting (night or dusk)".
-        bright_ratio: Brighter than this multiple of it is "much brighter
-            than the reference (glare or a different surface)".
-        colour_distance: An RGB distance from the reference court colour
-            above this is "a court colour unlike the reference".
-        weak_coverage: Ball coverage over the rally stretches below this
-            counts as weak tracking. Mirrors `BallConfig.weak_coverage`.
-        weak_confidence: Mean ball confidence below this counts as weak.
+        reference_path: The conditions reference file; None for none (no
+            conditions are then compared, and the note says so).
+        sigmas: Margin beyond the reference's range, in its standard
+            deviations.
+        brightness_floor: The smallest brightness margin, as a fraction of
+            the reference's median brightness.
+        chroma_floor: The smallest colour margin, in chromaticity units
+            (each channel's share of R + G + B).
+        relative_coverage: Weak tracking is rally coverage below this
+            share of the reference's measured rally coverage.
+        relative_confidence: ...or mean ball confidence below this share
+            of the reference's.
+        weak_coverage: Absolute fallback when the reference has no
+            tracking baseline. Mirrors `BallConfig.weak_coverage`.
+        weak_confidence: Absolute fallback for mean ball confidence.
         weak_point_share: Weak tracking is also concluded when more than
             this share of the points had weak ball tracking.
         max_abstention: More than this share of shots with no result
             counts as weak event reading.
     """
 
-    reference_brightness: float = 120.0
-    reference_court_rgb: tuple[float, float, float] = (70.0, 110.0, 140.0)
-    dim_ratio: float = 0.6
-    bright_ratio: float = 1.5
-    colour_distance: float = 70.0
+    reference_path: Path | None = field(
+        default_factory=lambda: Path(__file__).resolve().parent
+        / "models"
+        / "ball_conditions_reference.json"
+    )
+    sigmas: float = 3.0
+    brightness_floor: float = 0.25
+    chroma_floor: float = 0.03
+    relative_coverage: float = 0.6
+    relative_confidence: float = 0.6
     weak_coverage: float = 0.5
     weak_confidence: float = 0.25
     weak_point_share: float = 0.5
     max_abstention: float = 0.6
+
+
+@dataclass(frozen=True)
+class DeadTimeConfig:
+    """The dead-time pre-pass: skipping stretches with no ball-strike sounds.
+
+    Off by default. Measured on the one real recording (docs/ball-model-
+    training.md): these settings skip 15.6% of the 95-minute match and
+    none of the 683 shots SwingVision recorded falls in a skipped stretch -
+    but with 4s of padding instead of 5, one does, and the settings were
+    chosen on that same recording. Treat the margin as thin.
+
+    Attributes:
+        enabled: Run the pre-pass and skip what it finds.
+        min_strength: Weakest strike, in units of the recording's
+            `percentile` onset.
+        percentile: The onset percentile strengths are scaled by.
+        separation_seconds: Two peaks closer than this are one strike.
+        join_seconds: Strikes this close belong to one burst of play.
+        min_strikes: A burst needs this many strikes to count as play.
+        pad_before: Tracked before a burst's first strike, seconds (a
+            serve's toss and bounce come before its strike).
+        pad_after: Tracked after its last strike (a ball still in flight,
+            bouncing out).
+        min_dead_seconds: Only quiet stretches at least this long are
+            skipped; shorter ones are tracked.
+    """
+
+    enabled: bool = False
+    min_strength: float = 1.0
+    percentile: float = 99.0
+    separation_seconds: float = 0.08
+    join_seconds: float = 6.0
+    min_strikes: int = 2
+    pad_before: float = 5.0
+    pad_after: float = 5.0
+    min_dead_seconds: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -878,6 +940,19 @@ class PipelineConfig:
         check_drift: Re-calibrate at the start of every chunk and note
             any chunk where the court has moved in the picture.
         drift_warn_px: Movement, in pixels, above which that note is made.
+        recalibrate: Adopt a chunk's re-calibration when the court has
+            moved and the new calibration lies closer to the painted lines
+            (see `pipeline.TrackerPipeline._chunk_calibration`).
+        recalibrate_px: Movement from the calibration in use, in pixels,
+            above which a re-calibration is considered. Above the measured
+            noise: two re-calibrations 20s apart on the real recording
+            differed by 0.7-3.4px (median 1.9px, 9 pairs), while the camera
+            itself crept 5-6.5px over the match.
+        alignment_frames: Frames, from the middle of the chunk, the two
+            calibrations are compared on (blended by median).
+        decode_hole_frames: A run of at least this many frames that the
+            timestamp index lists but decoding never produced is reported
+            as a hole in the footage.
         calibrate_at: Where in the run the court is calibrated from,
             seconds after its start.
     """
@@ -890,6 +965,10 @@ class PipelineConfig:
     keep_checkpoints: bool = True
     check_drift: bool = True
     drift_warn_px: float = 6.0
+    recalibrate: bool = True
+    recalibrate_px: float = 4.0
+    alignment_frames: int = 5
+    decode_hole_frames: int = 3
     calibrate_at: float = 0.0
 
 
@@ -910,6 +989,7 @@ class TrackerConfig:
         assemble: `RawShotRow` emission settings.
         pipeline: Chunking, overlap and checkpoint settings.
         retraining: When the "retraining recommended" note is given.
+        dead_time: The dead-time pre-pass.
     """
 
     video: VideoConfig = field(default_factory=VideoConfig)
@@ -924,3 +1004,4 @@ class TrackerConfig:
     assemble: AssembleConfig = field(default_factory=AssembleConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     retraining: RetrainingConfig = field(default_factory=RetrainingConfig)
+    dead_time: DeadTimeConfig = field(default_factory=DeadTimeConfig)

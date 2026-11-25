@@ -484,3 +484,17 @@ def test_an_attempt_block_with_a_folded_fault_round_trips():
     back = assemble.AttemptBlock.from_dict(stored)
     assert back.folded_fault is not None and back.folded_fault.fault
     assert back.to_dict() == stored
+
+
+def test_decode_holes_lists_the_frames_the_index_has_but_decoding_never_gave():
+    from tracking.video import PtsIndex
+
+    index = PtsIndex(np.arange(0.0, 10.0, 0.5))
+    window = stitch.ChunkWindow(0, 2.0, 6.0, 0.0, 8.0)
+    decoded = [2.0, 2.5, 4.5, 5.0]
+    expected, holes = stitch.decode_holes(index, window, decoded)
+    assert expected == 8
+    assert holes == ((3.0, 4.0, 3), (5.5, 5.5, 1))
+    assert stitch.decode_holes(index, window, decoded, min_frames=2)[1] == ((3.0, 4.0, 3),)
+    last = stitch.ChunkWindow(1, 6.0, 9.5, 4.0, 9.5, last=True)
+    assert stitch.decode_holes(index, last, np.arange(6.0, 9.6, 0.5)) == (8, ())

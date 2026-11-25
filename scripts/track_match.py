@@ -42,7 +42,7 @@ from swingvision_import.config import ImportConfig  # noqa: E402
 from swingvision_import.review import load_pending, unresolved_flags  # noqa: E402
 from tracking import video as video_stage  # noqa: E402
 from tracking.assemble import MatchSetup, TrackingBlock  # noqa: E402
-from tracking.config import PipelineConfig, TrackerConfig  # noqa: E402
+from tracking.config import DeadTimeConfig, PipelineConfig, TrackerConfig  # noqa: E402
 from tracking.pipeline import (  # noqa: E402
     ManualKeypoints,
     TrackerPipeline,
@@ -191,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-pose", action="store_true", help="Name strokes from the ball alone (faster)."
     )
+    parser.add_argument(
+        "--skip-dead-time",
+        action="store_true",
+        help="Listen first and skip stretches with no ball-strike sounds (faster; off by "
+        "default - a very quiet point could be skipped, and every skip is listed).",
+    )
     return parser
 
 
@@ -210,7 +216,46 @@ def build_pipeline(args: argparse.Namespace) -> TrackerPipeline:
     )
     imports = ImportConfig(pending_dir=args.pending_dir) if args.pending_dir else ImportConfig()
     stages = TrackerStages(use_pose=not args.no_pose)
-    return TrackerPipeline(TrackerConfig(pipeline=pipeline), imports, stages)
+    config = TrackerConfig(
+        pipeline=pipeline, dead_time=DeadTimeConfig(enabled=args.skip_dead_time)
+    )
+    return TrackerPipeline(config, imports, stages)
+
+
+def setup_and_retraining_lines(tracking: dict) -> list[str]:
+    """The camera-setup and retraining lines printed after staging.
+
+    Both are informational: neither blocks review or finalize.
+
+    Args:
+        tracking: The staged match's `tracking` block.
+
+    Returns:
+        Lines for a person.
+    """
+    lines = []
+    setup = tracking.get("camera_setup")
+    if setup:
+        lines.append(f"Camera setup: {setup['headline']}")
+        lines.extend(f"  {line}" for line in setup.get("consequences") or [])
+        if setup.get("reshoot"):
+            lines.append(
+                "  Re-shooting from higher up, further back and centred would help most."
+            )
+    retraining = tracking.get("retraining") or {}
+    if retraining.get("recommended"):
+        lines.append(f"Retraining suggested (informational): {retraining['note']}")
+    elif retraining.get("compared", True):
+        lines.append(
+            "Retraining: not suggested - the footage is within the conditions the ball "
+            "detector was tuned on, and ball tracking was not weak."
+        )
+    else:
+        lines.append(
+            "Retraining: could not be judged - no conditions reference is installed "
+            "(scripts/measure_conditions.py makes one)."
+        )
+    return lines
 
 
 def _clock(seconds: float | None) -> str:
@@ -313,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
         block = TrackingBlock.from_dict(record.tracking)
         if block.notes:
             print(f"Coverage: {block.notes[0]}")
+        for line in setup_and_retraining_lines(record.tracking):
+            print(line)
     flags = unresolved_flags(record)
     print(f"{len(flags)} point(s) need review before this match can be finalized.")
     for note in record.import_notes:

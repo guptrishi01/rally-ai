@@ -187,3 +187,111 @@ def test_weights_checksum_is_sha256(tmp_path):
     path.write_bytes(b"abc")
 
     assert models.weights_checksum(path) == hashlib.sha256(b"abc").hexdigest()
+
+
+class _FakeTensor:
+    """Just enough of a torch tensor for the adapter."""
+
+    def __init__(self, array):
+        self.array = array
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.array
+
+
+def _fake_torch(loaded: list):
+    """A stand-in for torch: `jit.load` records its path; the module halves the middle frame."""
+
+    class Module:
+        def __init__(self):
+            self.evaluated = False
+
+        def eval(self):
+            self.evaluated = True
+
+        def __call__(self, tensor):
+            return _FakeTensor(tensor.array[1, :, :, 0] / 510.0)
+
+    class NoGrad:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def load(path, map_location=None):
+        loaded.append((path, map_location))
+        module = Module()
+        loaded.append(module)
+        return module
+
+    return types.SimpleNamespace(
+        jit=types.SimpleNamespace(load=load),
+        no_grad=NoGrad,
+        from_numpy=_FakeTensor,
+    )
+
+
+def _ball_spec(monkeypatch, payload: bytes, *, sha=True, weights="ball.pt", task="ball_heatmap"):
+    """Registers a trained-looking ball model and returns its config's name."""
+    spec = models.ModelSpec(
+        name="ball-test",
+        task=task,
+        backend="torch",
+        weights=weights,
+        release="first-party 2026-12-01",
+        licence="first-party",
+        sha256=hashlib.sha256(payload).hexdigest() if sha else None,
+    )
+    monkeypatch.setitem(models.REGISTRY, spec.name, spec)
+    return spec.name
+
+
+def test_a_pinned_trained_ball_model_loads_on_cpu_and_predicts(monkeypatch, tmp_path):
+    import numpy as np
+
+    name = _ball_spec(monkeypatch, b"scripted")
+    (tmp_path / "ball.pt").write_bytes(b"scripted")
+    loaded = []
+    monkeypatch.setattr(models, "import_backend", lambda backend: _fake_torch(loaded))
+    model = models.load_ball_heatmap(ModelConfig(ball_model=name, weights_dir=tmp_path))
+    assert model.source == "ball-test@first-party 2026-12-01"
+    assert loaded[0] == (str((tmp_path / "ball.pt").resolve()), "cpu") and loaded[1].evaluated
+    frames = np.full((3, 4, 5, 3), 255, dtype=np.uint8)
+    heat = model.model.predict(frames)
+    assert heat.shape == (4, 5) and np.allclose(heat, 0.5)
+
+
+def test_a_ball_model_file_that_is_missing_or_not_pinned_is_refused(monkeypatch, tmp_path):
+    name = _ball_spec(monkeypatch, b"scripted")
+    config = ModelConfig(ball_model=name, weights_dir=tmp_path)
+    with pytest.raises(models.WeightsMissingError, match="copy the exported file there"):
+        models.load_ball_heatmap(config)
+    (tmp_path / "ball.pt").write_bytes(b"tampered")
+    with pytest.raises(models.WeightsChecksumError):
+        models.load_ball_heatmap(config)
+    name = _ball_spec(monkeypatch, b"tampered", sha=False)
+    with pytest.raises(models.WeightsChecksumError, match="pins no SHA-256"):
+        models.load_ball_heatmap(config)
+    loaded = []
+    monkeypatch.setattr(models, "import_backend", lambda backend: _fake_torch(loaded))
+    unchecked = ModelConfig(ball_model=name, weights_dir=tmp_path, verify_checksum=False)
+    assert models.load_ball_heatmap(unchecked).weights_path.name == "ball.pt"
+
+
+def test_a_ball_model_entry_must_be_a_ball_model(monkeypatch, tmp_path):
+    with pytest.raises(models.ModelError, match="is not a ball model"):
+        models.load_ball_heatmap(ModelConfig(ball_model="yolo11n", weights_dir=tmp_path))
+
+
+def test_ball_weights_are_looked_for_in_the_per_user_folder_by_default(monkeypatch, tmp_path):
+    name = _ball_spec(monkeypatch, b"scripted")
+    monkeypatch.setattr(models, "default_weights_dir", lambda: tmp_path / "cache")
+    with pytest.raises(models.WeightsMissingError, match="cache"):
+        models.load_ball_heatmap(ModelConfig(ball_model=name))

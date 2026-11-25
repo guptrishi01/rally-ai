@@ -10,7 +10,12 @@ naming each hit's stroke (`strokes`), splitting the hits into serve
 attempts numbered as SwingVision numbers them (`segment`), and emitting
 them as the `RawShotRow`s reconstruction consumes, with a provenance
 trace per row (`assemble`), and walking a whole recording in checkpointed
-chunks into a staged match (`stitch`, `pipeline`).
+chunks into a staged match (`stitch`, `pipeline`). Phase 8 adds
+measuring it: scoring tracker output against a reference export or the
+reviewer's confirmations (`evaluate`), the conditions the ball detector
+was tuned on (`conditions`), an audio pre-pass that skips stretches with
+no play (`deadtime`), and exporting labelled frames for training the
+learned ball model (`dataset`).
 
 Importing this package loads no machine-learning library; see `models`.
 """
@@ -20,6 +25,7 @@ from .config import (
     BallConfig,
     CalibrationConfig,
     CourtConfig,
+    DeadTimeConfig,
     EventConfig,
     ModelConfig,
     PipelineConfig,
@@ -37,6 +43,7 @@ __all__ = [
     "BallConfig",
     "CalibrationConfig",
     "CourtConfig",
+    "DeadTimeConfig",
     "EventConfig",
     "ModelConfig",
     "PipelineConfig",

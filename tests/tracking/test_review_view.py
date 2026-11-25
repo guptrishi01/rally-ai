@@ -148,6 +148,8 @@ def test_a_match_summary_carries_the_coverage_line_and_its_denominators():
         "models": {"ball": "classic-ball"},
         "video": "match.mp4",
         "range": [0.0, 600.0],
+        "setup": None,
+        "retraining": None,
     }
 
 
@@ -156,3 +158,58 @@ def test_a_sparse_match_block_still_summarises():
     assert match["notes"] == []
     assert match["models"] == {"ball": "b"}
     assert match["video"] is None and match["shots"] is None
+
+
+def _quality(**overrides):
+    data = {
+        "points": 11,
+        "inliers": 11,
+        "residual_px_median": 0.6,
+        "residual_px_max": 2.1,
+        "residual_m_median": 0.01,
+        "residual_m_max": 0.15,
+        "near_depth_m_per_px": 0.014,
+        "far_depth_m_per_px": 0.28,
+        "far_lateral_m_per_px": 0.02,
+        "lines_found": ["near_baseline"],
+        "far_baseline_found": False,
+        "support": 0.98,
+        "setup_score": 66.5,
+        "warnings": [],
+    }
+    data.update(overrides)
+    return data
+
+
+DARKER = "footage much darker than the conditions the ball detector was tuned on"
+
+
+def test_the_setup_and_retraining_panels_are_summarised_for_the_reviewer():
+    block = {
+        "calibration": {"quality": _quality()},
+        "retraining": {
+            "recommended": True,
+            "note": "Retraining the ball model is suggested: footage much darker ...",
+            "conditions": [DARKER],
+            "weak_tracking": False,
+            "measures": {"brightness": 40},
+        },
+    }
+    match = review_view.match_provenance(block)
+    setup = match["setup"]
+    assert setup["rating"] == "fair" and setup["score"] == 66.5 and setup["reshoot"] is True
+    assert setup["headline"].startswith("Camera setup score 66/100 (fair)")
+    assert any("0.28 m of court depth" in line for line in setup["consequences"])
+    retraining = match["retraining"]
+    assert retraining == {
+        "recommended": True,
+        "note": "Retraining the ball model is suggested: footage much darker ...",
+        "conditions": [DARKER],
+        "weak_tracking": False,
+        "informational": True,
+    }
+
+
+def test_a_calibration_without_quality_gives_no_setup_panel():
+    match = review_view.match_provenance({"calibration": {}, "retraining": {}})
+    assert match["setup"] is None and match["retraining"] is None

@@ -45,6 +45,7 @@ __all__ = [
     "REGISTRY",
     "BackendMissingError",
     "LoadedModel",
+    "TorchScriptHeatmap",
     "ModelError",
     "ModelSpec",
     "WeightsChecksumError",
@@ -309,24 +310,97 @@ def _verify(path: Path, spec: ModelSpec) -> None:
         )
 
 
-def load_ball_heatmap(config: ModelConfig | None = None) -> LoadedModel:
-    """Loads the learned ball detector (Track B) - which does not exist yet.
+class TorchScriptHeatmap:
+    """Adapts an exported TorchScript ball model to `ball.HeatmapModel`.
 
-    The slot is here so `ball.HeatmapBallDetector` has something to be
-    given once a model has been trained (on a cloud GPU, per the spec) and
-    its weights registered in `BALL_HEATMAP`.
+    The exported module takes the three frames exactly as the tracker
+    holds them - a (3, H, W, 3) uint8 tensor - and returns an (H, W)
+    heatmap in 0..1. Resizing and normalising live *inside* the exported
+    module (docs/ball-model-training.md), so they are pinned by the same
+    SHA-256 as the weights and cannot drift from what was trained.
+
+    Attributes:
+        module: The loaded TorchScript module.
+    """
+
+    def __init__(self, module: Any, torch: Any) -> None:
+        """Wraps a loaded module.
+
+        Args:
+            module: The TorchScript module, in eval mode.
+            torch: The torch package.
+        """
+        self.module = module
+        self._torch = torch
+
+    def predict(self, frames: Any) -> Any:
+        """Scores every pixel of the middle frame.
+
+        Args:
+            frames: (3, H, W, 3) uint8 RGB: earlier, judged, later.
+
+        Returns:
+            (H, W) float heatmap.
+        """
+        import numpy as np
+
+        with self._torch.no_grad():
+            heat = self.module(self._torch.from_numpy(np.ascontiguousarray(frames)))
+        return np.asarray(heat.detach().cpu().numpy(), dtype=float)
+
+
+def load_ball_heatmap(config: ModelConfig | None = None) -> LoadedModel:
+    """Loads the learned ball detector (Track B) from pinned, local weights.
+
+    Weights are never downloaded and never committed: a trained file is
+    copied into the weights folder by hand, and its registry entry must
+    name the file and pin its SHA-256 (docs/ball-model-training.md, "Pin
+    the weights"). Until then this raises.
 
     Args:
-        config: Model settings; unused until weights exist.
+        config: Which ball model (`ModelConfig.ball_model`), where weights
+            are kept, and whether the checksum is enforced.
 
     Returns:
-        Nothing yet.
+        The loaded model, wrapped as a `ball.HeatmapModel`, with its
+        provenance string ("name@release").
 
     Raises:
-        WeightsMissingError: Always, for now: no trained weights.
+        ModelError: If the configured entry is not a ball model.
+        WeightsMissingError: If the entry names no trained weights, or the
+            file is not in the weights folder.
+        WeightsChecksumError: If the file is not the pinned one, or the
+            entry pins no checksum while checksums are enforced.
+        BackendMissingError: If torch is not installed.
     """
-    del config
-    raise WeightsMissingError(
-        f"No trained weights exist for {BALL_HEATMAP.name!r}. The learned ball detector "
-        "(Track B) has not been trained; use the classic `ball.MotionBallDetector`."
+    config = config or ModelConfig()
+    spec = model_spec(config.ball_model)
+    if spec.task != "ball_heatmap":
+        raise ModelError(f"{spec.name!r} is not a ball model.")
+    if spec.weights is None:
+        raise WeightsMissingError(
+            f"No trained weights exist for {spec.name!r}. The learned ball detector (Track B) "
+            "has not been trained; use the classic `ball.MotionBallDetector`."
+        )
+    folder = Path(config.weights_dir) if config.weights_dir else default_weights_dir()
+    path = (folder / spec.weights).resolve()
+    if not path.is_file():
+        raise WeightsMissingError(
+            f"{spec.name!r} expects its trained weights at {path}; copy the exported file there "
+            "(weights are never downloaded automatically and never committed)."
+        )
+    if config.verify_checksum:
+        if spec.sha256 is None:
+            raise WeightsChecksumError(
+                f"{spec.name!r} pins no SHA-256, so {path.name} cannot be verified. Add its "
+                "checksum (tracking.models.weights_checksum) to the registry entry."
+            )
+        _verify(path, spec)
+    torch = import_backend(spec.backend)
+    module = torch.jit.load(str(path), map_location="cpu")
+    module.eval()
+    source = f"{spec.name}@{spec.release}"
+    logger.info("Loaded ball model %s from %s", source, path)
+    return LoadedModel(
+        spec=spec, model=TorchScriptHeatmap(module, torch), source=source, weights_path=path
     )

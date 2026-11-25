@@ -493,3 +493,85 @@ def test_the_overlay_draws_the_template_on_a_copy(result, court_image):
     assert plain_green.sum() == 0
     column, row = np.round(result.require().to_image([(0.0, 8.0)])[0]).astype(int)
     assert red[row - 2 : row + 3, column - 2 : column + 3].any()  # on the centre line
+
+
+# --------------------------------------------------------------------------
+# Line alignment (judging a re-calibration) and setup advice
+# --------------------------------------------------------------------------
+
+
+def test_a_calibration_that_fits_lies_on_the_lines_and_a_moved_one_does_not(
+    result, camera, court_image
+):
+    fitted = calibrate.line_alignment_px(result.calibration, court_image)
+    moved_camera = make_camera(lateral=0.6)
+    moved = calibrate.calibrate_from_points(
+        {
+            name: tuple(court.project(ground_homography(moved_camera), np.array(point)))
+            for name, point in TEMPLATE.keypoints.items()
+        },
+        SIZE,
+    ).calibration
+    shifted = calibrate.line_alignment_px(moved, court_image)
+    assert fitted < 1.0 < shifted
+    assert calibrate.line_alignment_px(moved, render_court(moved_camera)) < 1.0
+
+
+def test_alignment_needs_lines_and_a_court_in_the_frame(result):
+    blank = np.full((SIZE[1], SIZE[0], 3), 60, dtype=np.uint8)
+    assert calibrate.line_alignment_px(result.calibration, blank) is None
+    away = calibrate.Calibration(
+        homography=np.array([[1.0, 0, -1e6], [0, 1.0, -1e6], [0, 0, 1.0]]),
+        inverse=np.array([[1.0, 0, 1e6], [0, 1.0, 1e6], [0, 0, 1.0]]),
+        image_size=SIZE,
+        template_kind="doubles",
+        provenance=Provenance.MEASURED,
+        quality=result.calibration.quality,
+    )
+    lined = np.full((SIZE[1], SIZE[0], 3), 60, dtype=np.uint8)
+    lined[100:103, :] = 255
+    assert calibrate.line_alignment_px(away, lined) is None
+
+
+def _quality(score, far_depth=0.28, near=0.014, far_found=False, residual=0.6):
+    return calibrate.CalibrationQuality(
+        points=11,
+        inliers=11,
+        residual_px_median=residual,
+        residual_px_max=2 * residual,
+        residual_m_median=0.01,
+        residual_m_max=0.1,
+        near_depth_m_per_px=near,
+        far_depth_m_per_px=far_depth,
+        far_lateral_m_per_px=0.02,
+        lines_found=None,
+        far_baseline_found=far_found,
+        support=None,
+        setup_score=score,
+        warnings=(),
+    )
+
+
+def test_setup_advice_says_what_a_weak_far_end_costs_and_what_to_do():
+    advice = calibrate.setup_advice(_quality(66.5))
+    assert advice.rating == "fair" and advice.reshoot
+    assert advice.headline == (
+        "Camera setup score 66/100 (fair): the far end is the weak part of this recording."
+    )
+    assert "0.28 m of court depth (20 times the near end's 0.014 m)" in advice.consequences[0]
+    assert "behind the net tape" in advice.consequences[1]
+    assert "Re-shooting from higher up" in advice.note()
+    assert advice.to_dict()["far_depth_m_per_px"] == 0.28
+
+
+def test_a_good_setup_needs_no_reshoot_and_a_loose_fit_is_named():
+    good = calibrate.setup_advice(_quality(88.0, far_depth=0.08, far_found=True))
+    assert good.rating == "good" and not good.reshoot and good.consequences == ()
+    assert good.headline.endswith("the whole court is well placed from this position.")
+    assert "Re-shooting" not in good.note()
+    loose = calibrate.setup_advice(_quality(40.0, far_depth=0.08, far_found=None, residual=4.0))
+    assert loose.rating == "poor" and not loose.reshoot
+    assert loose.headline == "Camera setup score 40/100 (poor)."
+    assert "fit loosely (4.0 px median)" in loose.consequences[0]
+    flat = calibrate.setup_advice(_quality(50.0, far_depth=0.3, near=0.0, far_found=True))
+    assert "inf times" in flat.consequences[0]

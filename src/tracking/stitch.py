@@ -55,6 +55,7 @@ import logging
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 
@@ -438,6 +439,19 @@ class ChunkResult:
         tracker_state: The player tracker's snapshot at the end of its
             stretch - where the next chunk carries on from.
         detector_name: The person detector's name.
+        calibration: The calibration the chunk was tracked with (a
+            `calibrate.Calibration`), or None for checkpoints written
+            before chunks carried one - the run's own is meant then.
+        recalibrated: Whether that is a re-calibration adopted at its
+            start rather than the one carried from before.
+        alignment_px: (calibration in use, re-calibration) line alignment
+            when a re-calibration was judged; None otherwise.
+        decoded_frames: Frames of its stretch that decoding produced.
+        expected_frames: Frames of its stretch the timestamp index lists.
+        decode_holes: (first, last, frames) for each run of listed frames
+            decoding never produced - a corrupt or cut stretch.
+        skipped_frames: Frames of its stretch the dead-time pre-pass
+            skipped (decoded, not tracked).
     """
 
     window: ChunkWindow
@@ -458,6 +472,42 @@ class ChunkResult:
     seconds: float
     tracker_state: bytes
     detector_name: str
+    calibration: Any = None
+    recalibrated: bool = False
+    alignment_px: tuple[float | None, float | None] | None = None
+    decoded_frames: int | None = None
+    expected_frames: int | None = None
+    decode_holes: tuple[tuple[float, float, int], ...] = ()
+    skipped_frames: int = 0
+
+
+def decode_holes(
+    index: Any, window: ChunkWindow, decoded: Sequence[float], min_frames: int = 1
+) -> tuple[int, tuple[tuple[float, float, int], ...]]:
+    """Finds the frames of a chunk's stretch that decoding never produced.
+
+    Args:
+        index: The recording's `video.PtsIndex`.
+        window: The chunk.
+        decoded: Timestamps of the frames of its stretch decoding produced.
+        min_frames: Shortest run of missing frames reported.
+
+    Returns:
+        (frames the index lists in the stretch, the holes as (first
+        missing timestamp, last missing timestamp, frames missing)).
+    """
+    pts = np.asarray(index.pts)
+    low = int(np.searchsorted(pts, window.start, side="left"))
+    high = int(np.searchsorted(pts, window.end, side="right" if window.last else "left"))
+    listed = pts[low:high]
+    seen = np.isin(np.round(listed, 6), np.round(np.asarray(decoded, dtype=float), 6))
+    holes = []
+    missing = np.concatenate([[False], ~seen, [False]])
+    edges = np.flatnonzero(np.diff(missing.astype(np.int8)))
+    for first, last in zip(edges[::2], edges[1::2]):
+        if last - first >= min_frames:
+            holes.append((float(listed[first]), float(listed[last - 1]), int(last - first)))
+    return len(listed), tuple(holes)
 
 
 def pose_key(pts: float) -> float:

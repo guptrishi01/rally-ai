@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .assemble import AttemptBlock, ShotTrace, TrackingBlock
+from .calibrate import CalibrationQuality, setup_advice
 from .provenance import Provenance
 
 # The order fields are listed in, so the same shot always reads the same
@@ -152,8 +153,12 @@ def match_provenance(block: Mapping | None) -> dict | None:
         None for an imported match. Otherwise the tracker's notes (the
         first is its coverage line, "Tracked N of M shots with
         confidence"), the shot counts behind it, how many results and
-        strokes were guessed, and the models that produced it - so a
-        reviewer sees the denominator beside every number.
+        strokes were guessed, the models that produced it - so a
+        reviewer sees the denominator beside every number - and two
+        informational panels: `setup` (`calibrate.setup_advice`: the
+        camera position's score and what it makes weak) and `retraining`
+        (whether a ball model retrained on footage like this is
+        suggested, and why). Either is None when the block lacks it.
     """
     if not block:
         return None
@@ -171,4 +176,27 @@ def match_provenance(block: Mapping | None) -> dict | None:
         "models": parsed.extra.get("models") or summary.get("models") or {},
         "video": video.get("name"),
         "range": parsed.extra.get("range"),
+        "setup": _setup(parsed.extra.get("calibration")),
+        "retraining": _retraining(parsed.extra.get("retraining")),
+    }
+
+
+def _setup(calibration: Mapping | None) -> dict | None:
+    """The camera-setup advice, from the stored calibration's quality."""
+    quality = (calibration or {}).get("quality")
+    if not quality:
+        return None
+    return setup_advice(CalibrationQuality.from_dict(dict(quality))).to_dict()
+
+
+def _retraining(advice: Mapping | None) -> dict | None:
+    """The retraining suggestion, reduced to what a reviewer reads."""
+    if not advice:
+        return None
+    return {
+        "recommended": bool(advice.get("recommended")),
+        "note": advice.get("note"),
+        "conditions": list(advice.get("conditions") or []),
+        "weak_tracking": bool(advice.get("weak_tracking")),
+        "informational": True,
     }

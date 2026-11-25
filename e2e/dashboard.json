@@ -133,7 +133,9 @@
       "assert": {
         "selector_present": [
           "[data-testid='tracker-coverage']",
-          "[data-testid='tracker-point']"
+          "[data-testid='tracker-point']",
+          "[data-testid='tracker-setup']",
+          "[data-testid='tracker-retraining']"
         ],
         "text_present": [
           "TRACKED FROM VIDEO, NOT IMPORTED",
@@ -141,7 +143,10 @@
           "HOW THE TRACKER READ THIS POINT",
           "HOW IT IS KNOWN",
           "seen",
-          "every one still needs your decision"
+          "every one still needs your decision",
+          "Camera setup score 66/100 (fair)",
+          "the far end is the weak part",
+          "This is informational"
         ],
         "text_absent": [
           "undefined",

@@ -1041,6 +1041,20 @@ class PlayerTracker:
         self._settled_last = 0.0
         self._rejected = 0
 
+    def recalibrate(self, calibration: Calibration) -> None:
+        """Places feet through a new calibration from now on.
+
+        Used when the camera has moved mid-match and the pipeline adopted
+        a fresh calibration: identities, tracks and swaps carry on; only
+        where the court is in the picture changes.
+
+        Args:
+            calibration: The calibration to use from now on.
+        """
+        self._calibration = calibration
+        if self._region is not None:
+            self._region = player_region(calibration, self._config)
+
     def _detect(self, image: np.ndarray) -> list[PersonDetection]:
         """Runs the detector, on the player region when cropping."""
         if self._region is None:

@@ -673,6 +673,176 @@ def drift_px(first: Calibration, second: Calibration) -> float:
     return float(np.linalg.norm(second.to_image(marks) - here, axis=1).max())
 
 
+def line_alignment_px(
+    calibration: Calibration,
+    frame: np.ndarray,
+    config: TrackerConfig | None = None,
+    cap_px: float = 30.0,
+    per_line: int = 40,
+) -> float | None:
+    """Measures how well a calibration's court lies on a frame's painted lines.
+
+    Every template line inside the frame is sampled; for each sample, the
+    distance to the nearest line pixel (`court.line_mask`) is taken, capped
+    at `cap_px` so a stretch of line hidden behind a player counts as a
+    bounded miss rather than an outlier. A calibration that fits the frame
+    scores about a pixel; one the camera has moved away from scores the
+    distance it moved.
+
+    Args:
+        calibration: The calibration to check.
+        frame: (H, W, 3) uint8 RGB frame (a median of several is steadier).
+        config: Supplies the line-detection settings.
+        cap_px: Largest distance one sample can contribute.
+        per_line: Samples per template line.
+
+    Returns:
+        The mean distance in pixels, or None when no template line falls
+        inside the frame or the frame has no line pixels. The mean, not
+        the median: a line is several pixels wide, so most samples of a
+        slightly-off court still land on line pixels and a median reads 0.
+    """
+    config = config or TrackerConfig()
+    mask = court_module.line_mask(frame, config.court)
+    if not mask.any():
+        return None
+    distance = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 3)
+    template = court_template(calibration.template_kind)
+    samples, _ = court_module._template_samples(template, per_line)
+    pixels = calibration.to_image(samples.reshape(-1, 2))
+    height, width = mask.shape
+    inside = (
+        np.isfinite(pixels).all(axis=1)
+        & (pixels[:, 0] >= 0)
+        & (pixels[:, 0] <= width - 1)
+        & (pixels[:, 1] >= 0)
+        & (pixels[:, 1] <= height - 1)
+    )
+    if not inside.any():
+        return None
+    columns = np.rint(pixels[inside, 0]).astype(np.intp)
+    rows = np.rint(pixels[inside, 1]).astype(np.intp)
+    return float(np.mean(np.minimum(distance[rows, columns], cap_px)))
+
+
+@dataclass(frozen=True)
+class SetupAdvice:
+    """What the camera's position means for this match, in plain words.
+
+    The honest version of SwingVision's "Reduced Accuracy" notice (spec
+    section 10): shown with the staged match, so the user knows before
+    trusting it whether a better camera position would have helped.
+
+    Attributes:
+        score: `CalibrationQuality.setup_score`, 0-100 (a heuristic for
+            ranking setups, not a probability).
+        rating: "good" (75 or more), "fair" (50 to 75) or "poor". The
+            bands are a judgement on that heuristic, not a measurement.
+        headline: One sentence summarising the setup.
+        consequences: What is weak because of it, one sentence each.
+        reshoot: Whether filming from a better position would measurably
+            help: true when the far end's depth resolution or a hidden far
+            baseline limits what can be placed there.
+        far_depth_m_per_px: Court depth one pixel covers at the far
+            baseline.
+    """
+
+    score: float
+    rating: str
+    headline: str
+    consequences: tuple[str, ...]
+    reshoot: bool
+    far_depth_m_per_px: float
+
+    def to_dict(self) -> dict:
+        """Serialises to plain JSON-ready types.
+
+        Returns:
+            Every field, the consequences as a list.
+        """
+        return {
+            "score": self.score,
+            "rating": self.rating,
+            "headline": self.headline,
+            "consequences": list(self.consequences),
+            "reshoot": self.reshoot,
+            "far_depth_m_per_px": self.far_depth_m_per_px,
+        }
+
+    def note(self) -> str:
+        """The advice as one import note.
+
+        Returns:
+            The headline, the consequences, and what to do.
+        """
+        parts = [self.headline, *self.consequences]
+        if self.reshoot:
+            parts.append(
+                "Re-shooting from higher up, further back and centred behind the baseline "
+                "would help most; this is informational and blocks nothing."
+            )
+        return " ".join(parts)
+
+
+def setup_advice(
+    quality: CalibrationQuality, config: CalibrationConfig | None = None
+) -> SetupAdvice:
+    """Turns a calibration's numbers into setup advice.
+
+    Args:
+        quality: The calibration's quality.
+        config: Supplies the far-end depth resolution above which the far
+            end counts as weak.
+
+    Returns:
+        The advice.
+    """
+    config = config or CalibrationConfig()
+    score = float(quality.setup_score)
+    rating = "good" if score >= 75 else "fair" if score >= 50 else "poor"
+    far = float(quality.far_depth_m_per_px)
+    consequences = []
+    weak_far = far > config.warn_far_depth_m_per_px
+    if weak_far:
+        ratio = far / quality.near_depth_m_per_px if quality.near_depth_m_per_px > 0 else math.inf
+        consequences.append(
+            f"At the far baseline one pixel covers {far:.2f} m of court depth ({ratio:.0f} times "
+            f"the near end's {quality.near_depth_m_per_px:.3f} m), so far-end bounces, in/out "
+            "calls and the far player's position are much coarser than the near end's."
+        )
+    hidden = quality.far_baseline_found is False
+    if hidden:
+        consequences.append(
+            "The far baseline could not be seen - from this height it sits behind the net tape - "
+            "so the far end of the court is extrapolated, not measured."
+        )
+    if quality.residual_px_median > 3.0:
+        consequences.append(
+            f"The court lines fit loosely ({quality.residual_px_median:.1f} px median), so every "
+            "court position carries that much extra error."
+        )
+    if not consequences:
+        headline = (
+            f"Camera setup score {score:.0f}/100 ({rating}): the whole court is well placed from "
+            "this position."
+        )
+    else:
+        headline = (
+            f"Camera setup score {score:.0f}/100 ({rating}): the far end is the weak part of this "
+            "recording."
+            if weak_far or hidden
+            else f"Camera setup score {score:.0f}/100 ({rating})."
+        )
+    return SetupAdvice(
+        score=score,
+        rating=rating,
+        headline=headline,
+        consequences=tuple(consequences),
+        reshoot=weak_far or hidden,
+        far_depth_m_per_px=far,
+    )
+
+
 def draw_overlay(
     frame: np.ndarray,
     calibration: Calibration,

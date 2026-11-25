@@ -192,6 +192,20 @@ def _tracked_record(date: str, opponent: str, flagged: bool, seed: int) -> Match
             "shots": [asdict(shot) for shot in shots],
             "models": {"ball": "classic-ball-v1", "person": "motion"},
             "video": {"name": "match.mp4"},
+            "calibration": {"quality": {
+                "points": 11, "inliers": 11, "residual_px_median": 0.6, "residual_px_max": 2.1,
+                "residual_m_median": 0.01, "residual_m_max": 0.15, "near_depth_m_per_px": 0.014,
+                "far_depth_m_per_px": 0.28, "far_lateral_m_per_px": 0.023, "lines_found": None,
+                "far_baseline_found": False, "support": None, "setup_score": 66.5,
+                "warnings": [],
+            }},
+            "retraining": {
+                "recommended": True, "weak_tracking": True, "conditions": [],
+                "note": "Ball tracking was weak on this match (a ball position in 45% of rally "
+                        "frames), although the lighting and court colour are within the range "
+                        "the ball detector was tuned on. This is informational: nothing is "
+                        "blocked, and every point is reviewed as usual.",
+            },
         },
     )
 

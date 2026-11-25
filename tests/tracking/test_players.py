@@ -803,3 +803,17 @@ def test_a_person_whose_feet_map_nowhere_is_rejected(calibration, monkeypatch):
     tracks = tracker.finish()
 
     assert tracks.near == () and tracks.rejected_people == 8
+
+
+def test_a_recalibrated_tracker_places_feet_and_crops_through_the_new_court(calibration):
+    from .conftest import exact_calibration, make_camera
+
+    moved = exact_calibration(make_camera(lateral=0.5))
+    cropping = players.PlayerTracker(ScriptedDetector([]), calibration, QUICK)
+    cropping._region = (0.0, 0.0, 1.0, 1.0)  # so the new region is visibly recomputed
+    cropping.recalibrate(moved)
+    assert cropping._calibration is moved
+    assert cropping._region == players.player_region(moved, QUICK)
+    whole = players.PlayerTracker(ScriptedDetector([]), calibration, QUICK, crop=False)
+    whole.recalibrate(moved)
+    assert whole._calibration is moved and whole._region is None

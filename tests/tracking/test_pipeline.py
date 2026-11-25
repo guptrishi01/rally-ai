@@ -23,12 +23,18 @@ from swingvision_import import footage, review
 from swingvision_import.config import ImportConfig
 from swingvision_import.load import UnresolvedReviewError
 from swingvision_import.pipeline import SwingVisionImportPipeline
-from tracking import assemble, court, events, models, players, stitch
+from tracking import assemble, conditions, court, events, models, players, stitch
 from tracking import ball as ball_stage
 from tracking import pipeline as tp
 from tracking.assemble import MatchSetup, TrackingBlock
 from tracking.calibrate import CalibrationResult
-from tracking.config import PipelineConfig, PlayerConfig, RetrainingConfig, TrackerConfig
+from tracking.config import (
+    DeadTimeConfig,
+    PipelineConfig,
+    PlayerConfig,
+    RetrainingConfig,
+    TrackerConfig,
+)
 from tracking.events import EventTrack
 from tracking.players import PersonDetection
 from tracking.provenance import Provenance, Tagged
@@ -803,46 +809,101 @@ def _scene(brightness=120.0, rgb=REFERENCE):
     return ball_stage.SceneStats(30, brightness, 20.0, tuple(float(v) for v in rgb), -40.0)
 
 
+def _reference(low=105.0, high=125.0, rgb=(80.0, 120.0, 170.0), tracking=True):
+    """A conditions reference measured on daylight footage like the real one."""
+    samples = [
+        conditions.ConditionSample(float(k), b, 20.0, tuple(v * b / 115.0 for v in rgb), -90.0)
+        for k, b in enumerate(np.linspace(low, high, 21))
+    ]
+    baseline = {"rally_coverage": 0.88, "rally_mean_confidence": 0.43} if tracking else None
+    return conditions.build_reference(
+        samples,
+        video={"name": "reference.mp4", "sha256": "ab" * 32},
+        detector="motion-ball",
+        measured="2026-11-25",
+        method="test",
+        tracking=baseline,
+    )
+
+
 def test_good_tracking_in_reference_conditions_recommends_nothing():
-    advice = tp.retraining_advice(_ball("M" * 100), [(0.0, 9.9)], _quality(), _scene())
+    advice = tp.retraining_advice(
+        _ball("M" * 100),
+        [(0.0, 9.9)],
+        _quality(),
+        _scene(115.0, (80, 120, 170)),
+        None,
+        _reference(),
+    )
     assert not advice.recommended and advice.note is None
     assert advice.measures["rally_coverage"] == 1.0
-    assert advice.provisional
+    assert not advice.provisional and advice.compared
+    assert advice.measures["coverage_floor"] == pytest.approx(0.6 * 0.88, abs=1e-3)
 
 
 def test_weak_tracking_at_night_recommends_retraining_and_says_why():
     advice = tp.retraining_advice(
-        _ball("M" * 20 + "." * 80, confidence=0.2), [(0.0, 9.9)], _quality(), _scene(40.0)
+        _ball("M" * 20 + "." * 80, confidence=0.2),
+        [(0.0, 9.9)],
+        _quality(),
+        _scene(40.0, (28, 42, 59)),
+        None,
+        _reference(),
     )
     assert advice.recommended and advice.weak_tracking
-    assert advice.note.startswith("Ball tracking was weak on this match (night or dusk lighting")
-    assert "Retraining the ball model on footage like this is recommended." in advice.note
-    assert "provisional" in advice.note
-    assert "20% of rally frames" in advice.note
+    assert advice.note.startswith(
+        "Retraining the ball model is suggested: footage much darker than the conditions the "
+        "ball detector was tuned on: court brightness 40 against 105-125 on the reference "
+        "recording (35% of its median)"
+    )
+    assert "Ball tracking was also weak here (a ball position in 20% of rally frames" in advice.note
+    assert "against 88% and 0.43 on the reference recording" in advice.note
+    assert advice.note.endswith(
+        "This is informational: nothing is blocked, and every point is reviewed as usual."
+    )
+    assert advice.conditions and "court colour" not in advice.note
 
 
-def test_weak_tracking_in_daylight_is_still_flagged():
+def test_weak_tracking_in_reference_conditions_is_still_flagged():
     advice = tp.retraining_advice(
-        _ball("M" * 30 + "." * 70), [(0.0, 9.9)], _quality(), _scene()
+        _ball("M" * 30 + "." * 70), [(0.0, 9.9)], _quality(), _scene(115.0, (80, 120, 170)),
+        None, _reference(),
     )
     assert advice.recommended and advice.conditions == ()
-    assert "in conditions close to the daylight reference" in advice.note
+    assert "within the range the ball detector was tuned on" in advice.note
 
 
 def test_unfamiliar_conditions_alone_recommend_retraining():
     advice = tp.retraining_advice(
-        _ball("M" * 100), [(0.0, 9.9)], _quality(), _scene(200.0, (200, 60, 60))
+        _ball("M" * 100), [(0.0, 9.9)], _quality(), _scene(200.0, (200, 60, 60)), None,
+        _reference(),
     )
     assert advice.recommended and not advice.weak_tracking
     assert len(advice.conditions) == 2
-    assert "much brighter light" in advice.note and "court colour unlike" in advice.note
-    assert "held up here" in advice.note
+    assert "much brighter than the conditions" in advice.note
+    assert "court colour unlike the reference's" in advice.note
+    assert "has not been tried in these conditions before" in advice.note
+
+
+def test_without_a_reference_conditions_are_not_compared_and_thresholds_are_fallbacks():
+    advice = tp.retraining_advice(
+        _ball("M" * 20 + "." * 80), [(0.0, 9.9)], _quality(), _scene(40.0), None, None
+    )
+    assert advice.recommended and advice.provisional and not advice.compared
+    assert advice.conditions == ()
+    assert "coverage thresholds are provisional fallbacks" in advice.note
+    assert "could not be compared: no conditions reference is installed" in advice.note
+    untracked = tp.retraining_advice(
+        _ball("M" * 20 + "." * 80), [(0.0, 9.9)], _quality(), _scene(), None,
+        _reference(tracking=False),
+    )
+    assert untracked.provisional and untracked.compared
 
 
 def test_many_weak_points_or_unknown_results_count_as_weak_tracking():
     patchy = _ball(("M" * 9 + ".") * 6 + "." * 40)
     stretches = [(k * 1.0, k * 1.0 + 0.9) for k in range(10)]
-    advice = tp.retraining_advice(patchy, stretches, _quality(), _scene())
+    advice = tp.retraining_advice(patchy, stretches, _quality(), _scene(), None, None)
     assert "weak on 4 of 10 points" not in (advice.note or "")
     assert advice.measures["weak_points"] == 4
     advice = tp.retraining_advice(_ball("M" * 100), [(0.0, 9.9)], _quality(10, 8), _scene())
@@ -853,9 +914,18 @@ def test_many_weak_points_or_unknown_results_count_as_weak_tracking():
 
 
 def test_no_scene_and_no_points_give_no_advice():
-    advice = tp.retraining_advice(_ball("."), [], _quality(0), None)
+    advice = tp.retraining_advice(_ball("."), [], _quality(0), None, None, _reference())
     assert not advice.recommended and advice.measures["scene"] is None
+    assert not advice.compared
     assert json.loads(json.dumps(advice.to_dict()))["conditions"] == []
+
+
+def test_the_shipped_reference_is_the_measured_one():
+    reference = conditions.load_reference(RetrainingConfig().reference_path)
+    assert reference is not None and reference.samples >= 100
+    assert len(reference.video["sha256"]) == 64
+    assert reference.tracking["rally_coverage"] > 0.5
+    assert reference.brightness.minimum < reference.brightness.p50 < reference.brightness.maximum
 
 
 def test_a_dark_weakly_tracked_match_carries_the_notice(
@@ -865,7 +935,9 @@ def test_a_dark_weakly_tracked_match_carries_the_notice(
     pipeline, _ = make_pipeline(calibration, scripted, import_config, video=dark)
     record = review.load_pending(ingest(pipeline, tmp_path))
     notice = record.import_notes[1]
-    assert notice.startswith("Ball tracking was weak on this match (night or dusk lighting")
+    assert notice.startswith(
+        "Retraining the ball model is suggested: footage much darker than the conditions"
+    )
     assert record.tracking["retraining"]["recommended"] is True
     assert record.tracking["scene"]["brightness"] < 30
 
@@ -921,6 +993,8 @@ def test_a_camera_that_moved_mid_match_is_noted(
     assert chunks[3]["drift_px"] > 6
     note = next(n for n in record.import_notes if n.startswith("The court moved"))
     assert "from about 900s" in note
+    # The fake video has no file to judge the new fit on: it is not used.
+    assert "could not be checked against the footage" in note
 
 
 # --------------------------------------------------------------------------
@@ -1107,3 +1181,327 @@ def test_a_real_clip_is_decoded_chunk_by_chunk_and_staged(small_clip, import_con
     direct = assemble.assemble(track, labels, SETUP, tracking_start=0.0)
     assert record.tracking["shots"] == [asdict(row) for row in direct.export.shots]
     assert record.tracking["scene"]["frames_sampled"] > 0
+
+
+# --------------------------------------------------------------------------
+# A camera that moves: re-calibrating per chunk
+# --------------------------------------------------------------------------
+
+
+def _moving_calibrator(calibration, moved, from_at=600.0):
+    """The court where it was until `from_at`, moved after."""
+
+    def calibrator(_video, at):
+        return CalibrationResult(moved if at >= from_at else calibration, None)
+
+    return calibrator
+
+
+class RecordingEvents(ScriptedEvents):
+    """Scripted events that also note which calibration each chunk used."""
+
+    def __init__(self, track):
+        super().__init__(track)
+        self.calibrations = []
+
+    def __call__(self, ball, players_, calibration, audio, config):
+        self.calibrations.append(calibration)
+        return super().__call__(ball, players_, calibration, audio, config)
+
+
+def test_a_moved_camera_is_recalibrated_when_the_new_fit_lies_closer(
+    calibration, scripted, import_config, tmp_path
+):
+    moved = exact_calibration(make_camera(lateral=0.4))
+    judged = []
+
+    def judge(_video, current, candidate, start, end):
+        judged.append((current, candidate, start, end))
+        return 2.5, 0.4
+
+    recorder = RecordingEvents(scripted[0])
+    pipeline, _ = make_pipeline(
+        calibration,
+        scripted,
+        import_config,
+        calibrator=_moving_calibrator(calibration, moved),
+        alignment_judge=judge,
+        event_detector=recorder,
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    chunks = record.tracking["run"]["chunks"]
+    assert [c["recalibrated"] for c in chunks] == [False, False, True, False]
+    assert chunks[2]["alignment_px"] == [2.5, 0.4]
+    # Judged once: after adopting, the next chunk's court has not moved again.
+    assert len(judged) == 1 and judged[0][1] is moved and judged[0][2] == 600.0
+    assert recorder.calibrations[0] is calibration and recorder.calibrations[3] is moved
+    note = next(n for n in record.import_notes if n.startswith("The court moved"))
+    assert "re-calibrated at 1 chunk start(s)" in note and "600s (2.50px -> 0.40px)" in note
+    assert "not replaced" not in note
+
+
+def test_a_recalibration_that_fits_worse_is_not_used(
+    calibration, scripted, import_config, tmp_path
+):
+    moved = exact_calibration(make_camera(lateral=0.4))
+    recorder = RecordingEvents(scripted[0])
+    pipeline, _ = make_pipeline(
+        calibration,
+        scripted,
+        import_config,
+        calibrator=_moving_calibrator(calibration, moved),
+        alignment_judge=lambda *_: (0.3, 2.0),
+        event_detector=recorder,
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    assert all(c is calibration for c in recorder.calibrations)
+    note = next(n for n in record.import_notes if n.startswith("The court moved"))
+    assert "At 2 chunk start(s) a fresh calibration fitted no better" in note
+    assert "no fresh calibration was shown to fit better" in note
+
+
+def test_recalibration_can_be_turned_off_or_held_back_by_its_threshold(
+    calibration, scripted, import_config, tmp_path
+):
+    moved = exact_calibration(make_camera(lateral=0.4))
+    off = TrackerConfig(pipeline=PipelineConfig(chunk_seconds=300.0, recalibrate=False))
+    pipeline, _ = make_pipeline(
+        calibration, scripted, import_config, config=off,
+        calibrator=_moving_calibrator(calibration, moved),
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    note = next(n for n in record.import_notes if n.startswith("The court moved"))
+    assert "re-calibration is turned off" in note
+
+    held = TrackerConfig(
+        pipeline=PipelineConfig(chunk_seconds=300.0, drift_warn_px=0.5, recalibrate_px=500.0)
+    )
+    pipeline, _ = make_pipeline(
+        calibration, scripted, import_config, config=held,
+        calibrator=_moving_calibrator(calibration, moved),
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path / "held", force=True))
+    note = next(n for n in record.import_notes if n.startswith("The court moved"))
+    assert "within the 500px re-calibration threshold" in note
+
+
+def test_an_adopted_calibration_is_carried_into_a_resumed_run(
+    calibration, scripted, import_config, tmp_path
+):
+    moved = exact_calibration(make_camera(lateral=0.4))
+    stages = dict(
+        calibrator=_moving_calibrator(calibration, moved), alignment_judge=lambda *_: (2.0, 0.5)
+    )
+    pipeline, _ = make_pipeline(calibration, scripted, import_config, **stages)
+
+    class Killed(Exception):
+        """Stands in for the OS killing the process."""
+
+    def kill_after_three(progress):
+        if progress.stage == "tracking" and progress.chunks_done == 3:
+            raise Killed
+
+    with pytest.raises(Killed):
+        ingest(pipeline, tmp_path, progress=kill_after_three)
+    recorder = RecordingEvents(scripted[0])
+    resumed, _ = make_pipeline(
+        calibration, scripted, import_config, event_detector=recorder, **stages
+    )
+    ingest(resumed, tmp_path)
+    # The checkpoint's copy of the adopted calibration, not the run's first one.
+    assert len(recorder.calibrations) == 1
+    assert np.allclose(recorder.calibrations[0].homography, moved.homography)
+
+
+def test_a_checkpoint_from_before_chunks_carried_a_calibration_means_the_runs(
+    calibration, scripted, import_config, tmp_path
+):
+    pipeline, _ = make_pipeline(calibration, scripted, import_config)
+
+    class Killed(Exception):
+        """Stands in for the OS killing the process."""
+
+    def kill_after_one(progress):
+        if progress.stage == "tracking" and progress.chunks_done == 1:
+            raise Killed
+
+    with pytest.raises(Killed):
+        ingest(pipeline, tmp_path, progress=kill_after_one)
+    work = import_config.pending_dir / "tracking_work"
+    store = tp.CheckpointStore(next(p for p in work.iterdir() if p.is_dir()))
+    store.save_chunk(replace(store.load_chunk(0), calibration=None))
+    recorder = RecordingEvents(scripted[0])
+    resumed, _ = make_pipeline(calibration, scripted, import_config, event_detector=recorder)
+    ingest(resumed, tmp_path)
+    assert len(recorder.calibrations) == 3
+    assert all(np.allclose(c.homography, calibration.homography) for c in recorder.calibrations)
+
+
+def test_the_real_alignment_judge_compares_both_fits_on_the_chunks_own_frames(
+    calibration, scripted, import_config, tmp_path, monkeypatch
+):
+    asked = []
+
+    def frames_at(_video, times, config=None):
+        asked.extend(times)
+        image = np.zeros((SIZE[1], SIZE[0], 3), dtype=np.uint8)
+        return [VideoFrame(t, image) for t in times]
+
+    monkeypatch.setattr(tp.video_stage, "frames_at", frames_at)
+    monkeypatch.setattr(tp.calibrate, "line_alignment_px", lambda cal, image, config: 1.0)
+    pipeline, _ = make_pipeline(calibration, scripted, import_config)
+    result = pipeline._judge_alignment(tmp_path / "v.mp4", calibration, calibration, 0.0, 60.0)
+    assert result == (1.0, 1.0)
+    assert asked == [10.0, 20.0, 30.0, 40.0, 50.0]
+
+
+# --------------------------------------------------------------------------
+# A damaged, cut-short or frame-dropping file
+# --------------------------------------------------------------------------
+
+
+class DamagedVideo(SyntheticVideo):
+    """A recording whose index lists frames decoding never produces."""
+
+    def __init__(self, hole=(100.0, 110.0), header_extra=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.hole, self.header_extra = hole, header_extra
+
+    def load(self, path):
+        source = super().load(path)
+        info = replace(source.info, duration=source.info.duration + self.header_extra)
+        return replace(source, info=info)
+
+    def frames(self, path, start, end, index):
+        for frame in super().frames(path, start, end, index):
+            if not self.hole[0] <= frame.pts <= self.hole[1]:
+                yield frame
+
+
+def test_frames_that_cannot_be_decoded_are_reported_never_guessed(
+    calibration, scripted, import_config, tmp_path
+):
+    damaged = DamagedVideo(hole=(100.0, 110.0))
+    pipeline, _ = make_pipeline(calibration, scripted, import_config, video=damaged)
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    chunk = record.tracking["run"]["chunks"][0]
+    assert chunk["decode_holes"] == [[100.0, 110.0, 51]]
+    assert chunk["expected_frames"] - chunk["decoded_frames"] == 51
+    note = next(n for n in record.import_notes if "could not be decoded" in n)
+    assert note.startswith("51 frame(s) in 1 stretch(es) could not be decoded (100.0-110.0s)")
+
+
+def test_a_file_cut_short_says_so(calibration, scripted, import_config, tmp_path):
+    cut = DamagedVideo(hole=(-2.0, -1.0), header_extra=300.0)
+    pipeline, _ = make_pipeline(calibration, scripted, import_config, video=cut)
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    note = next(n for n in record.import_notes if "cut short" in n)
+    assert "header says it runs 1500s but its frames stop at 1200s" in note
+
+
+def test_dropped_frames_inside_a_point_name_the_point(
+    calibration, scripted, import_config, tmp_path
+):
+    gappy = SyntheticVideo(fps=10.0, vfr=True)
+    hit = scripted[0].hits[1].pts
+    gappy.times = gappy.times[(gappy.times < hit - 0.1) | (gappy.times > hit + 0.6)]
+    pipeline, _ = make_pipeline(calibration, scripted, import_config, video=gappy)
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    note = next(n for n in record.import_notes if n.startswith("The recording drops frames"))
+    assert "1 gap(s) longer than 0.20s" in note and "the play of 1 point(s)" in note
+    assert len(record.tracking["frame_gaps"]) == 1
+    assert not any("drops frames now and then" in n for n in record.import_notes)
+
+
+# --------------------------------------------------------------------------
+# The setup score
+# --------------------------------------------------------------------------
+
+
+def test_the_setup_advice_is_a_note_and_replaces_the_far_end_warnings(
+    calibration, scripted, import_config, tmp_path
+):
+    warning = "The far baseline was not located (behind the net); its position is extrapolated."
+    quality = replace(
+        calibration.quality,
+        far_baseline_found=False,
+        far_depth_m_per_px=0.28,
+        setup_score=66.5,
+        warnings=(warning,),
+    )
+    weak = replace(calibration, quality=quality)
+    pipeline, _ = make_pipeline(weak, scripted, import_config, calibrator=_ok(weak))
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    setup = next(n for n in record.import_notes if n.startswith("Camera setup score"))
+    assert setup.startswith("Camera setup score 66/100 (fair): the far end is the weak part")
+    assert "Re-shooting from higher up" in setup and "informational" in setup
+    assert warning not in record.import_notes
+    assert record.tracking["camera_setup"]["reshoot"] is True
+
+
+# --------------------------------------------------------------------------
+# The dead-time pre-pass
+# --------------------------------------------------------------------------
+
+
+def _strike_curve(times, length=1200.0):
+    """An onset curve: quiet, with two sharp sounds at each of `times`."""
+    steps = int(length * 100)
+    curve = np.full(steps, 0.1, dtype=np.float32)
+    curve[::50] = 1.0
+    for moment in times:
+        for k in (int(moment * 100), int((moment + 1.0) * 100)):
+            curve[k] = 5.0
+    return curve
+
+
+def test_the_dead_time_pre_pass_skips_quiet_stretches_and_says_so(
+    calibration, scripted, import_config, tmp_path
+):
+    track = scripted[0]
+    curve = _strike_curve([h.pts for h in track.hits if h.pts < 600.0])
+    config = TrackerConfig(
+        pipeline=PipelineConfig(chunk_seconds=300.0),
+        dead_time=DeadTimeConfig(enabled=True, min_strength=2.0),
+    )
+    read = []
+    pipeline, _ = make_pipeline(
+        calibration,
+        scripted,
+        import_config,
+        config=config,
+        audio_curve_reader=lambda video: read.append(video) or curve,
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    plan = record.tracking["dead_time"]
+    assert len(read) == 1 and plan["skipped_share"] > 0.4
+    assert plan["dead"][-1][1] == pytest.approx(1200.0)
+    chunks = record.tracking["run"]["chunks"]
+    assert chunks[0]["skipped_frames"] > 0 and chunks[3]["skipped_frames"] == 1500
+    assert any(n.startswith("Dead-time pre-pass:") for n in record.import_notes)
+
+
+def test_a_dead_time_pre_pass_with_no_audio_tracks_everything(
+    calibration, scripted, import_config, tmp_path
+):
+    config = TrackerConfig(
+        pipeline=PipelineConfig(chunk_seconds=300.0), dead_time=DeadTimeConfig(enabled=True)
+    )
+    pipeline, _ = make_pipeline(
+        calibration, scripted, import_config, config=config, audio_curve_reader=lambda _v: None
+    )
+    record = review.load_pending(ingest(pipeline, tmp_path))
+    assert record.tracking["dead_time"] is None
+    assert any("audio gave it nothing to go on" in n for n in record.import_notes)
+    assert all(c["skipped_frames"] == 0 for c in record.tracking["run"]["chunks"])
+
+
+def test_the_real_dead_time_reader_is_used_when_none_is_injected(
+    calibration, scripted, import_config, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(tp.deadtime_stage, "read_onset_curve", lambda video: None)
+    config = TrackerConfig(
+        pipeline=PipelineConfig(chunk_seconds=300.0), dead_time=DeadTimeConfig(enabled=True)
+    )
+    pipeline, _ = make_pipeline(calibration, scripted, import_config, config=config)
+    assert pipeline._dead_time(tmp_path / "v.mp4", 0.0, 10.0) is None

@@ -1,0 +1,66 @@
+{
+  "format": 1,
+  "video": {
+    "name": "full_match_video (1).mp4",
+    "sha256": "1ee15140b4803443c2c34c1264d532cd9fc2a8c3bbc5961baf76093d54dbbd91",
+    "duration": 5741.9,
+    "width": 1920,
+    "height": 1080
+  },
+  "detector": "motion-ball",
+  "measured": "2026-11-25",
+  "method": "288 single frames, one seek each, from 0s to 5740s; court surface (near half, through the calibration) only.",
+  "samples": 288,
+  "failed_samples": 0,
+  "brightness": {
+    "mean": 113.6568,
+    "std": 4.4038,
+    "minimum": 99.3103,
+    "p05": 105.8382,
+    "p50": 114.5573,
+    "p95": 119.7372,
+    "maximum": 123.4553
+  },
+  "contrast": {
+    "mean": 23.7671,
+    "std": 3.1238,
+    "minimum": 18.054,
+    "p05": 19.1734,
+    "p50": 23.3877,
+    "p95": 28.8781,
+    "maximum": 33.7144
+  },
+  "court_rgb": [
+    82.525,
+    118.692,
+    169.382
+  ],
+  "chroma": [
+    0.22245,
+    0.32025,
+    0.4573
+  ],
+  "chroma_distance": {
+    "mean": 0.0192,
+    "std": 0.0125,
+    "minimum": 0.0011,
+    "p05": 0.0045,
+    "p50": 0.0171,
+    "p95": 0.045,
+    "maximum": 0.0619
+  },
+  "tracking": {
+    "rally_coverage": 0.878,
+    "rally_mean_confidence": 0.435,
+    "rally_frames": 3164,
+    "points": 7,
+    "weak_points": 0,
+    "range": [
+      355.0,
+      502.0
+    ],
+    "detector": "motion-ball",
+    "how": "Phase 6 pipeline chunks over the stated range; rally stretches are the SwingVision sheet's points (first shot - 0.5s to last shot + 1.5s, clock offset 1.99s) lying wholly inside it."
+  },
+  "extra": {}
+}

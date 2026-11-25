@@ -90,6 +90,7 @@ def test_the_arguments_reach_ingest(video, fake, capsys, tmp_path):
     assert "[tracking] 1/4 chunks (2.5 of 10.0 min of video), 120s per video minute" in out
     assert "ETA 0:15:00" in out
     assert "Coverage: Tracked 3 of 4 shots with confidence." in out
+    assert "Retraining: not suggested" in out
     assert "1 point(s) need review" in out
     assert "NOTE: Staged by the independent tracker" in out
     assert "scripts/verify_footage.py" in out
@@ -145,8 +146,38 @@ def test_the_pipeline_is_built_from_the_options(tmp_path):
     assert pipeline.config.pipeline.chunk_seconds == 60.0
     assert pipeline.config.pipeline.overlap_seconds == 5.0
     assert pipeline.stages.use_pose is False
+    assert pipeline.config.dead_time.enabled is False
     default = track_match.build_pipeline(track_match.build_parser().parse_args(["v.mp4", *BASE]))
     assert default.stages.use_pose is True and default.config.pipeline.work_dir is None
+    skipping = track_match.build_parser().parse_args(["v.mp4", *BASE, "--skip-dead-time"])
+    assert track_match.build_pipeline(skipping).config.dead_time.enabled is True
+
+
+def test_setup_and_retraining_are_printed_plainly_as_information():
+    lines = track_match.setup_and_retraining_lines(
+        {
+            "camera_setup": {
+                "headline": "Camera setup score 66/100 (fair): the far end is the weak part.",
+                "consequences": ["At the far baseline one pixel covers 0.28 m."],
+                "reshoot": True,
+            },
+            "retraining": {"recommended": True, "note": "Retraining the ball model is suggested."},
+        }
+    )
+    assert lines == [
+        "Camera setup: Camera setup score 66/100 (fair): the far end is the weak part.",
+        "  At the far baseline one pixel covers 0.28 m.",
+        "  Re-shooting from higher up, further back and centred would help most.",
+        "Retraining suggested (informational): Retraining the ball model is suggested.",
+    ]
+    unknown = track_match.setup_and_retraining_lines(
+        {"camera_setup": {"headline": "Good.", "reshoot": False}, "retraining": {"compared": False}}
+    )
+    assert unknown == [
+        "Camera setup: Good.",
+        "Retraining: could not be judged - no conditions reference is installed "
+        "(scripts/measure_conditions.py makes one).",
+    ]
 
 
 def test_progress_lines_before_anything_was_timed():
