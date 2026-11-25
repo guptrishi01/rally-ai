@@ -73,6 +73,47 @@ def _seconds(value: str) -> float:
     return seconds
 
 
+def _rating(value: str) -> int:
+    """argparse type for a 1-5 self-assessment rating.
+
+    Args:
+        value: The raw argument.
+
+    Returns:
+        The rating.
+
+    Raises:
+        argparse.ArgumentTypeError: If it is not a whole number from 1 to 5,
+            which data/schema.sql's CHECK would otherwise reject only at
+            finalize, after every point had been reviewed.
+    """
+    try:
+        rating = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"not a whole number: {value!r}") from error
+    if not 1 <= rating <= 5:
+        raise argparse.ArgumentTypeError("ratings run from 1 to 5")
+    return rating
+
+
+def _first_server(value: str) -> tuple[int, str]:
+    """argparse type for one set's first server, written SET=me|opponent.
+
+    Args:
+        value: The raw argument, e.g. "1=me".
+
+    Returns:
+        (set number, "me" or "opponent").
+
+    Raises:
+        argparse.ArgumentTypeError: If it is not in that form.
+    """
+    number, _, who = value.partition("=")
+    if not number.strip().isdigit() or who.strip() not in ("me", "opponent"):
+        raise argparse.ArgumentTypeError(f"expected SET=me or SET=opponent, got {value!r}")
+    return int(number), who.strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Defines the command line.
 
@@ -121,6 +162,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--player-appearance",
         help='What you were wearing, e.g. "grey shirt" - helps the footage check.',
+    )
+    parser.add_argument(
+        "--first-server",
+        type=_first_server,
+        action="append",
+        default=[],
+        metavar="SET=WHO",
+        help="Who served first in a set (me or opponent), e.g. 1=me; repeat per set. "
+        "Cross-checked against the tracked serve order.",
+    )
+    parser.add_argument("--energy-rating", type=_rating, help="Your energy, 1-5.")
+    parser.add_argument("--mental-rating", type=_rating, help="Your mental state, 1-5.")
+    parser.add_argument("--location", help="Where the match was played.")
+    parser.add_argument(
+        "--reviewer-note", help="Anything odd about this recording, shown during review."
     )
     parser.add_argument("--pending-dir", type=Path, help="Where to stage the match.")
     parser.add_argument("--work-dir", type=Path, help="Where to keep chunk checkpoints.")
@@ -223,15 +279,24 @@ def main(argv: list[str] | None = None) -> int:
             guest_hand=args.guest_hand,
         )
         keypoints = ManualKeypoints.from_file(args.keypoints) if args.keypoints else None
-        overrides = {}
-        if args.player_appearance:
-            overrides["player_appearance"] = args.player_appearance
+        overrides = {
+            field: getattr(args, field)
+            for field in (
+                "player_appearance",
+                "energy_rating",
+                "mental_rating",
+                "location",
+                "reviewer_note",
+            )
+            if getattr(args, field) not in (None, "")
+        }
         json_path = build_pipeline(args).ingest(
             args.video,
             setup,
             date=_match_date(args),
             opponent=args.opponent or args.guest,
             result=args.result,
+            first_server_by_set=dict(args.first_server) or None,
             tracked_identity=args.tracked_identity,
             start=args.start,
             end=args.end,

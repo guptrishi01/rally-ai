@@ -58,7 +58,7 @@ def _apply_actions(page, actions: list[dict]) -> list[str]:
     Args:
         page: The Playwright page.
         actions: Action dicts - {"click": sel}, {"fill": [sel, value]},
-            {"wait": ms}, {"press": [sel, key]}.
+            {"wait": ms}, {"press": [sel, key]}, {"select": [sel, value]}.
 
     Returns:
         Messages for any action that could not be performed.
@@ -71,6 +71,9 @@ def _apply_actions(page, actions: list[dict]) -> list[str]:
             elif "fill" in action:
                 selector, value = action["fill"]
                 page.fill(selector, value, timeout=5000)
+            elif "select" in action:
+                selector, value = action["select"]
+                page.select_option(selector, value, timeout=5000)
             elif "press" in action:
                 selector, key = action["press"]
                 page.press(selector, key, timeout=5000)

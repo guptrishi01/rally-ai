@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { api } from '../api'
 import FootagePanel from './FootagePanel'
+import {
+  MatchTrackingNote,
+  PointTrackingPanel,
+  ShotProvenanceLine,
+  StrokeCell,
+  traceFor,
+} from './TrackerProvenance'
 import { POINT_END_TYPES, WINNING_END_TYPES, type FlaggedPoint, type PendingDetail } from '../types'
 
 interface ReviewModalProps {
@@ -201,6 +208,8 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
               here, not only once review is finished: "host/guest may be
               reversed for this set" is worth knowing before confirming a
               hundred points, not after. Informational - never a gate. */}
+          {detail.tracking && <MatchTrackingNote tracking={detail.tracking} />}
+
           {detail.import_notes.length > 0 && (
             <details className="panel-sunk mt-5 p-4" data-testid="import-notes">
               <summary className="eyebrow cursor-pointer">
@@ -274,6 +283,8 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                   </div>
                 )}
 
+                {current.tracking && <PointTrackingPanel tracking={current.tracking} />}
+
                 {current.ai_suggested_point_end_type && (
                   <div className="panel-sunk mt-5 p-4">
                     <p className="eyebrow">Claude&rsquo;s read</p>
@@ -289,7 +300,14 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                     <table className="w-full border-collapse text-left text-[13px]">
                       <thead>
                         <tr className="border-b border-[var(--color-line)]">
-                          {['#', 'Player', 'Type', 'Stroke', 'Result'].map((h) => (
+                          {[
+                            '#',
+                            'Player',
+                            'Type',
+                            'Stroke',
+                            'Result',
+                            ...(current.tracking ? ['How it is known'] : []),
+                          ].map((h) => (
                             <th key={h} className="eyebrow py-2 pr-4 font-normal">
                               {h}
                             </th>
@@ -307,8 +325,17 @@ export default function ReviewModal({ detail, onAllConfirmed, onClose }: ReviewM
                             </td>
                             <td className="py-2 pr-4">{s.player}</td>
                             <td className="py-2 pr-4 text-[var(--color-dim)]">{s.type}</td>
-                            <td className="py-2 pr-4">{s.stroke}</td>
-                            <td className="py-2">{s.result}</td>
+                            <td className="py-2 pr-4">
+                              <StrokeCell stroke={s.stroke} />
+                            </td>
+                            <td className="py-2 pr-4">{s.result}</td>
+                            {current.tracking && (
+                              <td className="min-w-[12rem] py-2">
+                                <ShotProvenanceLine
+                                  shot={traceFor(current.tracking, s.shot_number)}
+                                />
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>

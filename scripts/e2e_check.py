@@ -4,6 +4,12 @@ The entry point for the behaviour half of the suite: rebuild the frontend,
 make sure a server is up, prove it is actually serving the build we just
 made, then drive it with e2e/harness.py.
 
+The server it starts is `e2e/seeded_server.py`: the real app on its own
+port (5055), serving a small synthetic dataset rebuilt on every start, so
+the checks never depend on - or touch - the user's own matches, and charts
+that only render with data (the placement heatmap) are actually exercised.
+Its tracking launcher starts nothing, so no check can begin a real run.
+
 The freshness proof is the part that earns its keep. The harness tests what
 is actually running, not the source tree, and a stale run invalidates the
 result in both directions - reporting failures you already fixed, or passing
@@ -42,7 +48,8 @@ _DIST_INDEX = _FRONTEND / "dist" / "index.html"
 _CONFIG = _REPO_ROOT / "e2e" / "dashboard.json"
 _HARNESS = _REPO_ROOT / "e2e" / "harness.py"
 _OUT = _REPO_ROOT / "e2e" / "output"
-_URL = "http://127.0.0.1:5000"
+_SEEDED_SERVER = _REPO_ROOT / "e2e" / "seeded_server.py"
+_URL = "http://127.0.0.1:5055"
 _BUNDLE = re.compile(r"assets/index-[A-Za-z0-9_-]+\.js")
 
 
@@ -125,7 +132,7 @@ def rebuild() -> None:
 
 
 def start_server() -> subprocess.Popen:
-    """Starts the Flask app and waits for it to answer.
+    """Starts the seeded Flask app and waits for it to answer.
 
     Returns:
         The server process, for the caller to terminate.
@@ -135,7 +142,7 @@ def start_server() -> subprocess.Popen:
     """
     print("starting server...")
     process = subprocess.Popen(
-        [sys.executable, str(_REPO_ROOT / "webapp" / "app.py")],
+        [sys.executable, str(_SEEDED_SERVER)],
         cwd=_REPO_ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

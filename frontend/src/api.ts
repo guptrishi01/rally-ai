@@ -6,8 +6,10 @@ import type {
   JournalFeedback,
   MatchStats,
   PendingDetail,
+  Placement,
   ShotPoint,
   StagedMatch,
+  TrackingJob,
 } from './types'
 
 export class ApiError extends Error {
@@ -66,6 +68,23 @@ export const api = {
     ),
 
   media: (matchId: number) => request<{ videos: string[] }>(`/api/matches/${matchId}/media`),
+
+  placement: (matchId: number) => request<Placement>(`/api/matches/${matchId}/placement`),
+
+  startTracking: (formData: FormData) =>
+    request<TrackingJob>('/api/track', { method: 'POST', body: formData }),
+
+  trackingJobs: () => request<TrackingJob[]>('/api/tracking'),
+
+  resumeTracking: (jsonFilename: string) =>
+    request<TrackingJob>(`/api/tracking/${encodeURIComponent(jsonFilename)}/resume`, {
+      method: 'POST',
+    }),
+
+  dismissTracking: (jsonFilename: string) =>
+    request<{ dismissed: string }>(`/api/tracking/${encodeURIComponent(jsonFilename)}`, {
+      method: 'DELETE',
+    }),
 
   shotEmbeddings: () => request<ShotPoint[]>('/api/shots/embeddings'),
 

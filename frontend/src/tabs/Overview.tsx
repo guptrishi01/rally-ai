@@ -12,8 +12,11 @@ import Magnetic from '../components/Magnetic'
 import Marquee from '../components/Marquee'
 import Dropzone from '../components/Dropzone'
 import PartPairing from '../components/PartPairing'
+import TrackingJobs from '../components/TrackingJobs'
 
 type Phase = 'idle' | 'uploading' | 'reviewing' | 'ready' | 'finalizing' | 'done'
+/** Where the shots come from: a SwingVision export, or the tracker reading the video. */
+type Mode = 'export' | 'track'
 
 interface OverviewProps {
   onMatchFinalized: (matchId: number) => void
@@ -53,6 +56,10 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
   const [exportNames, setExportNames] = useState<string[]>([])
   const [videoNames, setVideoNames] = useState<string[]>([])
   const formRef = useRef<HTMLFormElement>(null)
+  const [mode, setMode] = useState<Mode>('export')
+  // Bumped when a tracking job starts, so the job list fetches at once.
+  const [trackingKey, setTrackingKey] = useState(0)
+  const [trackingNotice, setTrackingNotice] = useState<string | null>(null)
 
   async function loadOverview() {
     setLoadingOverview(true)
@@ -112,6 +119,10 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
     if (phase !== 'idle') return
     if (!formRef.current) return
     const data = new FormData(formRef.current)
+    if (mode === 'track') {
+      await handleTrack(data)
+      return
+    }
     const exports = data.getAll('xlsx_files').filter((f) => f instanceof File && f.size > 0)
     if (exports.length === 0) {
       setFormError('Add at least one SwingVision .xlsx export before staging.')
@@ -131,6 +142,30 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
       }
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'Failed to stage this match.')
+      setPhase('idle')
+    }
+  }
+
+  async function handleTrack(data: FormData) {
+    const video = data.get('video_file')
+    if (!(video instanceof File) || video.size === 0) {
+      setFormError('Add the match video before starting tracking.')
+      return
+    }
+    setFormError(null)
+    setTrackingNotice(null)
+    setPhase('uploading')
+    try {
+      const job = await api.startTracking(data)
+      setTrackingKey((k) => k + 1)
+      setFormKey((k) => k + 1)
+      setVideoNames([])
+      setTrackingNotice(
+        `Tracking ${job.video} started in its own process. Its progress is shown above; the match appears for review when it finishes.`,
+      )
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : 'Failed to start tracking.')
+    } finally {
       setPhase('idle')
     }
   }
@@ -290,6 +325,12 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
         </Reveal>
       )}
 
+      <TrackingJobs
+        refreshKey={trackingKey}
+        onReview={resumeReview}
+        onStaged={loadStaged}
+      />
+
       {staged.length > 0 && (
         <Reveal>
           <section>
@@ -307,14 +348,16 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   <div>
                     <p className="h3">{match.opponent || match.json_filename}</p>
                     <p className="num mt-1 text-[12px] text-[var(--color-dim)]">
-                      {match.date} &middot; {match.flags_remaining} of {match.total_points} points
-                      still flagged
+                      {match.date} &middot;{' '}
+                      {match.source === 'tracker' && 'tracked from video \u00b7 '}
+                      {match.flags_remaining} of {match.total_points} points still flagged
                       {match.confirmed_by_footage > 0 &&
                         ` · ${match.confirmed_by_footage} confirmed by footage`}
                     </p>
                   </div>
                   <button
                     className="btn btn-ghost btn-sm"
+                    data-testid={`resume-${match.json_filename}`}
                     onClick={() => resumeReview(match.json_filename)}
                   >
                     Resume review
@@ -379,6 +422,119 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
               exit={{ opacity: 0 }}
               className="mt-8 space-y-9"
             >
+              <div
+                role="radiogroup"
+                aria-label="Where the shots come from"
+                className="flex flex-wrap gap-2"
+              >
+                {(
+                  [
+                    ['export', 'I have a SwingVision export'],
+                    ['track', 'No export \u2014 track the video'],
+                  ] as const
+                ).map(([value, text]) => {
+                  const on = mode === value
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      data-testid={`mode-${value}`}
+                      onClick={() => {
+                        setMode(value)
+                        setFormError(null)
+                        setExportNames([])
+                        setVideoNames([])
+                      }}
+                      className="rounded-full border px-4 py-2 text-[13px] transition-colors"
+                      style={{
+                        borderColor: on ? 'var(--color-accent)' : 'var(--color-line-strong)',
+                        background: on
+                          ? 'color-mix(in srgb, var(--color-accent) 10%, transparent)'
+                          : 'transparent',
+                        color: on ? 'var(--color-accent-deep)' : 'var(--color-dim)',
+                      }}
+                    >
+                      {text}
+                    </button>
+                  )
+                })}
+              </div>
+
+              {mode === 'track' ? (
+                <>
+                  <div
+                    className="panel-sunk p-5 text-[13px] leading-relaxed"
+                    data-testid="track-explainer"
+                  >
+                    <p>
+                      No SwingVision export? Rally AI&rsquo;s own tracker reads the video: the
+                      court, both players, the ball, every hit and bounce. It runs on this
+                      computer&rsquo;s processor in its own process &mdash; roughly{' '}
+                      <span className="num">8 hours</span> for a full match and about{' '}
+                      <span className="num">730 MB</span> of memory &mdash; so start it and
+                      leave it running.
+                    </p>
+                    <p className="mt-2 text-[var(--color-dim)]">
+                      Every shot it produces is a guess from pixels, labelled with what was
+                      measured and what was inferred, and every point comes back to you for
+                      review before it counts. Use a fixed camera that sees the whole court.
+                    </p>
+                  </div>
+                  <Dropzone
+                    name="video_file"
+                    label="Match video"
+                    accept="video/*"
+                    onNamesChange={setVideoNames}
+                    hint="Required &middot; one full recording from a fixed camera"
+                  />
+                  <div className="grid gap-6 sm:grid-cols-2">
+                    <label>
+                      <span className="field-label">Your name</span>
+                      <input
+                        type="text"
+                        name="host_name"
+                        required
+                        className="field"
+                        placeholder="e.g. Rishi"
+                      />
+                    </label>
+                    <label>
+                      <span className="field-label">Opponent&rsquo;s name in the shot list</span>
+                      <input
+                        type="text"
+                        name="guest_name"
+                        className="field"
+                        placeholder="Same as the opponent below"
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-6 sm:grid-cols-3">
+                    <label>
+                      <span className="field-label">You started at</span>
+                      <select name="host_starts" required className="field" defaultValue="near">
+                        <option value="near">The near end (camera side)</option>
+                        <option value="far">The far end</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span className="field-label">Your hand</span>
+                      <select name="host_hand" className="field" defaultValue="right">
+                        <option value="right">Right-handed</option>
+                        <option value="left">Left-handed</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span className="field-label">Opponent&rsquo;s hand</span>
+                      <select name="guest_hand" className="field" defaultValue="right">
+                        <option value="right">Right-handed</option>
+                        <option value="left">Left-handed</option>
+                      </select>
+                    </label>
+                  </div>
+                </>
+              ) : (
               <div className="grid gap-6 sm:grid-cols-2">
                 <Dropzone
                   name="xlsx_files"
@@ -396,8 +552,9 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   hint="Optional &middot; name each clip after its export"
                 />
               </div>
+              )}
 
-              {exportNames.length > 0 && (
+              {mode === 'export' && exportNames.length > 0 && (
                 <PartPairing exports={exportNames} videos={videoNames} />
               )}
 
@@ -420,15 +577,17 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
               </div>
 
               <div className="grid gap-6 sm:grid-cols-3">
-                <label className="sm:col-span-2">
-                  <span className="field-label">Your name as SwingVision tracked it</span>
-                  <input
-                    type="text"
-                    name="tracked_identity"
-                    placeholder="e.g. Rishi Gupta"
-                    className="field"
-                  />
-                </label>
+                {mode === 'export' && (
+                  <label className="sm:col-span-2">
+                    <span className="field-label">Your name as SwingVision tracked it</span>
+                    <input
+                      type="text"
+                      name="tracked_identity"
+                      placeholder="e.g. Rishi Gupta"
+                      className="field"
+                    />
+                  </label>
+                )}
                 <label>
                   <span className="field-label">Location</span>
                   <input type="text" name="location" className="field" />
@@ -470,6 +629,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                 </p>
               </label>
 
+              {mode === 'export' && (
               <label className="block">
                 <div className="flex items-baseline justify-between">
                   <span className="field-label">
@@ -493,6 +653,7 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                   every &ldquo;of N points played&rdquo; figure.
                 </p>
               </label>
+              )}
 
               <label className="block">
                 <div className="flex items-baseline justify-between">
@@ -581,6 +742,12 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                 </motion.div>
               )}
 
+              {trackingNotice && mode === 'track' && (
+                <p className="panel-sunk p-4 text-[14px]" role="status">
+                  {trackingNotice}
+                </p>
+              )}
+
               {(phase === 'finalizing' || phase === 'done') && (
                 <TennisBallProgress
                   status={phase === 'finalizing' ? 'running' : 'done'}
@@ -599,7 +766,13 @@ export default function Overview({ onMatchFinalized }: OverviewProps) {
                 ) : (
                   <Magnetic>
                     <button type="submit" className="btn" disabled={phase === 'uploading'}>
-                      {phase === 'uploading' ? 'Staging…' : 'Stage this match'}
+                      {phase === 'uploading'
+                        ? mode === 'track'
+                          ? 'Uploading the video…'
+                          : 'Staging…'
+                        : mode === 'track'
+                          ? 'Start tracking'
+                          : 'Stage this match'}
                       <span aria-hidden>&#8594;</span>
                     </button>
                   </Magnetic>

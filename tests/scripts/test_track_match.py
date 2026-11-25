@@ -69,7 +69,9 @@ def test_the_arguments_reach_ingest(video, fake, capsys, tmp_path):
     status = track_match.main(
         [str(video), *BASE, "--host-hand", "left", "--date", "2026-08-21", "--opponent",
          "Alex B", "--start", "355", "--end", "600", "--force", "--keypoints", str(keypoints),
-         "--tracked-identity", "Rishi", "--player-appearance", "grey shirt"]
+         "--tracked-identity", "Rishi", "--player-appearance", "grey shirt",
+         "--first-server", "1=me", "--first-server", "2=opponent", "--energy-rating", "4",
+         "--mental-rating", "2", "--location", "Club", "--reviewer-note", "cut at 3-2"]
     )
     assert status == 0
     (called_video, setup, kwargs) = fake.calls[0]
@@ -81,6 +83,9 @@ def test_the_arguments_reach_ingest(video, fake, capsys, tmp_path):
     assert kwargs["keypoints"] == ManualKeypoints({"near_baseline:left_singles": (1.0, 2.0)})
     assert kwargs["tracked_identity"] == "Rishi"
     assert kwargs["player_appearance"] == "grey shirt"
+    assert kwargs["first_server_by_set"] == {1: "me", 2: "opponent"}
+    assert (kwargs["energy_rating"], kwargs["mental_rating"]) == (4, 2)
+    assert (kwargs["location"], kwargs["reviewer_note"]) == ("Club", "cut at 3-2")
     out = capsys.readouterr().out
     assert "[tracking] 1/4 chunks (2.5 of 10.0 min of video), 120s per video minute" in out
     assert "ETA 0:15:00" in out
@@ -96,6 +101,7 @@ def test_without_a_date_the_files_date_is_used_and_said(video, fake, capsys):
     assert kwargs["date"].startswith("2025-08-2")
     assert kwargs["opponent"] == "Alex" and kwargs["force"] is False
     assert kwargs["keypoints"] is None and "player_appearance" not in kwargs
+    assert kwargs["first_server_by_set"] is None and "energy_rating" not in kwargs
     assert "modification date" in capsys.readouterr().out
 
 
@@ -117,7 +123,9 @@ def test_a_missing_video_is_refused(tmp_path, capsys):
 
 @pytest.mark.parametrize(
     "extra",
-    [["--resume", "--force"], ["--start", "-3"], ["--end", "soon"], ["--host-starts", "middle"]],
+    [["--resume", "--force"], ["--start", "-3"], ["--end", "soon"], ["--host-starts", "middle"],
+     ["--energy-rating", "6"], ["--mental-rating", "x"], ["--first-server", "1=you"],
+     ["--first-server", "one=me"]],
 )
 def test_bad_arguments_are_refused_by_the_parser(video, extra):
     with pytest.raises(SystemExit) as caught:

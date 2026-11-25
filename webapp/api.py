@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
+from datetime import date as dates
 from pathlib import Path
 
 from flask import Blueprint, Flask, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
 
 from ai.config import AICoachConfig
 from ai.journal import generate_journal_feedback
 from scripts.client import get_anthropic_client, get_footage_client
 from shot_map.embeddings import build_shot_embeddings
+from shot_map.placement import match_placement
 from stats.queries import (
     all_match_ids,
     all_match_stats,
@@ -48,7 +51,14 @@ from .submissions import (
     parse_content_range,
     validate_metadata,
 )
-from .uploads import match_slug, pair_uploads, save_paired_videos, save_uploaded_xlsx
+from .tracking_jobs import Launcher, TrackingJobConflict, TrackingJobError, TrackingJobs
+from .uploads import (
+    match_slug,
+    pair_uploads,
+    save_paired_videos,
+    save_uploaded_videos,
+    save_uploaded_xlsx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +143,115 @@ def _parse_match_overrides(form) -> dict[str, object]:
     return overrides
 
 
+_ENDS = ("near", "far")
+_HANDS = ("right", "left")
+_TRACK_EXTRA_FIELDS = (
+    "player_appearance",
+    "energy_rating",
+    "mental_rating",
+    "location",
+    "reviewer_note",
+)
+
+
+def _parse_track_fields(form) -> dict:
+    """Validates the "no export - track the video" intake answers.
+
+    Everything is checked before a byte of footage is written: a form
+    error must not leave a multi-gigabyte upload behind, nor start an
+    hours-long run that would fail at the end.
+
+    Args:
+        form: The submitted form (request.form).
+
+    Returns:
+        date, opponent, result, host, guest, host_starts, host_hand,
+        guest_hand, first_server_by_set (or None), and `extra`: the
+        optional intake fields the tracker CLI accepts.
+
+    Raises:
+        ValueError: With a sentence for the user, on any bad answer.
+    """
+    date = (form.get("date") or "").strip()
+    try:
+        dates.fromisoformat(date)
+    except ValueError as exc:
+        raise ValueError("Give the match date as a date (YYYY-MM-DD).") from exc
+    opponent = (form.get("opponent") or "").strip()
+    host = (form.get("host_name") or "").strip()
+    guest = (form.get("guest_name") or "").strip() or opponent
+    if not opponent:
+        raise ValueError("Give your opponent's name.")
+    if not host:
+        raise ValueError("Give your own name - it is how the tracker labels your shots.")
+    if host.casefold() == guest.casefold():
+        raise ValueError("Your name and your opponent's name must differ.")
+    result = form.get("result")
+    if result not in ("W", "L"):
+        raise ValueError("Say whether you won or lost the match.")
+    host_starts = form.get("host_starts")
+    if host_starts not in _ENDS:
+        raise ValueError("Say which end you started at: near (the camera's end) or far.")
+    hands = {}
+    for field in ("host_hand", "guest_hand"):
+        value = form.get(field) or "right"
+        if value not in _HANDS:
+            raise ValueError(f"{field.replace('_', ' ')} must be right or left.")
+        hands[field] = value
+    first_server_by_set = _parse_first_server_by_set(form)
+    if any(who not in ("me", "opponent") for who in (first_server_by_set or {}).values()):
+        raise ValueError("Who served first must be me or opponent.")
+    overrides = _parse_match_overrides(form)
+    return {
+        "date": date,
+        "opponent": opponent,
+        "result": result,
+        "host": host,
+        "guest": guest,
+        "host_starts": host_starts,
+        **hands,
+        "first_server_by_set": first_server_by_set,
+        "extra": {k: overrides[k] for k in _TRACK_EXTRA_FIELDS if k in overrides},
+    }
+
+
+def _track_argv(video: Path, fields: dict, pending_dir: Path) -> list[str]:
+    """Builds scripts/track_match.py's arguments for a tracking job.
+
+    Args:
+        video: The saved footage.
+        fields: `_parse_track_fields`'s result.
+        pending_dir: Where the run must stage the match - the directory
+            this server reads, which the CLI's own default may not be.
+
+    Returns:
+        The argument list, after the script's path.
+    """
+    argv = [str(video)]
+    for flag, key in (
+        ("--host", "host"),
+        ("--guest", "guest"),
+        ("--host-starts", "host_starts"),
+        ("--host-hand", "host_hand"),
+        ("--guest-hand", "guest_hand"),
+        ("--result", "result"),
+        ("--date", "date"),
+        ("--opponent", "opponent"),
+    ):
+        argv += [flag, str(fields[key])]
+    argv += ["--pending-dir", str(pending_dir)]
+    for field, value in fields["extra"].items():
+        argv += [f"--{field.replace('_', '-')}", str(value)]
+    for set_number, who in sorted((fields["first_server_by_set"] or {}).items()):
+        argv += ["--first-server", f"{set_number}={who}"]
+    return argv
+
+
 def create_api_blueprint(
     pipeline: SwingVisionImportPipeline,
     import_config: ImportConfig,
     webapp_config: WebAppConfig,
+    tracking_launcher: Launcher | None = None,
 ) -> Blueprint:
     """Builds the /api Blueprint.
 
@@ -145,6 +260,9 @@ def create_api_blueprint(
             one app.py constructs from import_config).
         import_config: SwingVision import pipeline settings.
         webapp_config: Upload/media directory settings.
+        tracking_launcher: Starts tracking processes; the real subprocess
+            launcher when omitted. Tests inject a fake, so no test ever
+            starts a real tracking run.
 
     Returns:
         The configured Blueprint, ready for app.register_blueprint.
@@ -153,6 +271,11 @@ def create_api_blueprint(
     submissions = SubmissionStore(webapp_config.submissions_dir)
     pairings = PairingStore(
         webapp_config.pairing_path, code_ttl_seconds=webapp_config.pairing_code_ttl_seconds
+    )
+    tracking_jobs = (
+        TrackingJobs(import_config.pending_dir, tracking_launcher)
+        if tracking_launcher is not None
+        else TrackingJobs(import_config.pending_dir)
     )
 
     def _connection():
@@ -286,6 +409,18 @@ def create_api_blueprint(
         )
         return jsonify([asdict(p) for p in points])
 
+    @api.get("/matches/<int:match_id>/placement")
+    def placement(match_id: int):
+        found = match_placement(
+            import_config.db_path,
+            import_config.pending_dir,
+            match_id,
+            import_config=import_config,
+        )
+        if found is None:
+            return jsonify({"error": "Match not found."}), 404
+        return jsonify(found.to_dict())
+
     def _stage_match(xlsx_files, video_files, fields) -> tuple[Path, dict]:
         """Saves uploaded files, stages the match, and archives the exports.
 
@@ -396,6 +531,103 @@ def create_api_blueprint(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify(payload)
+
+    # --- No export: track the video -------------------------------------
+
+    @api.post("/track")
+    def start_tracking():
+        """Saves footage and starts tracking it as its own OS process.
+
+        Answers 202 with the job's status as soon as the process starts;
+        the match is staged hours later, when the tracker finishes.
+        """
+        videos = [f for f in request.files.getlist("video_file") if f and f.filename]
+        if len(videos) != 1:
+            return jsonify({"error": "Choose exactly one match video to track."}), 400
+        try:
+            fields = _parse_track_fields(request.form)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        filename = secure_filename(videos[0].filename)
+        if not filename:
+            return jsonify({"error": "That video's filename has nothing usable in it."}), 400
+
+        destination = (
+            webapp_config.media_dir / match_slug(fields["date"], fields["opponent"]) / filename
+        )
+        # Imported here rather than at the top: it brings in OpenCV, which
+        # the server otherwise never loads.
+        from tracking.pipeline import TrackerPipeline
+
+        staged = TrackerPipeline(import_config=import_config).staged_path(
+            destination, date=fields["date"], opponent=fields["opponent"], result=fields["result"]
+        )
+        if staged.exists():
+            message = (
+                f"This video is already staged as {staged.name}. Open it from "
+                "'Staged, not yet loaded' to review it."
+            )
+            return jsonify({"error": message, "json_filename": staged.name}), 409
+        # Checked before the upload is written, so a refusal costs nothing.
+        if tracking_jobs.running():
+            current = tracking_jobs.status(staged.name)
+            message = (
+                "This match is already being tracked."
+                if current is not None and current["alive"]
+                else "Another match is being tracked right now. Tracking holds about 730 MB "
+                "of memory and every core it can get for hours, so one runs at a time - "
+                "start this one when that finishes."
+            )
+            return jsonify({"error": message}), 409
+
+        saved = save_uploaded_videos(
+            videos,
+            date=fields["date"],
+            opponent=fields["opponent"],
+            media_dir=webapp_config.media_dir,
+        )
+        try:
+            status = tracking_jobs.start(
+                staged.name,
+                _track_argv(saved[0], fields, import_config.pending_dir),
+                date=fields["date"],
+                opponent=fields["opponent"],
+                video=saved[0].name,
+            )
+        except TrackingJobConflict as exc:  # another request started one meanwhile
+            return jsonify({"error": str(exc)}), 409
+        return jsonify(status), 202
+
+    @api.get("/tracking")
+    def tracking_list():
+        return jsonify(tracking_jobs.list())
+
+    @api.get("/tracking/<path:json_filename>")
+    def tracking_status(json_filename: str):
+        status = tracking_jobs.status(Path(json_filename).name)
+        if status is None:
+            return jsonify({"error": "No tracking job for that match."}), 404
+        return jsonify(status)
+
+    @api.post("/tracking/<path:json_filename>/resume")
+    def tracking_resume(json_filename: str):
+        try:
+            status = tracking_jobs.resume(Path(json_filename).name)
+        except TrackingJobConflict as exc:
+            return jsonify({"error": str(exc)}), 409
+        except TrackingJobError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify(status), 202
+
+    @api.delete("/tracking/<path:json_filename>")
+    def tracking_dismiss(json_filename: str):
+        try:
+            found = tracking_jobs.dismiss(Path(json_filename).name)
+        except TrackingJobConflict as exc:
+            return jsonify({"error": str(exc)}), 409
+        if not found:
+            return jsonify({"error": "No tracking job for that match."}), 404
+        return jsonify({"dismissed": Path(json_filename).name})
 
     # --- Phone companion: pairing and submissions ----------------------
 
@@ -538,6 +770,8 @@ def create_api_blueprint(
                     "total_points": len(points),
                     "flags_remaining": sum(1 for p in points if p.needs_review),
                     "confirmed_by_footage": sum(1 for p in points if p.confirmed_by == "footage"),
+                    # Tracked from video rather than imported from an export.
+                    "source": "tracker" if record.tracking else "export",
                 }
             )
         return jsonify(staged)
@@ -550,6 +784,14 @@ def create_api_blueprint(
 
         record = load_pending(json_path)
         shots_by_point = pipeline.shots_by_point(record) or {}
+        match_tracking = None
+        point_view = None
+        if record.tracking:
+            # Imported only for a tracked match: it brings in the tracker.
+            from tracking.review_view import match_provenance, point_provenance
+
+            match_tracking = match_provenance(record.tracking)
+            point_view = point_provenance
         points = []
         for set_record in record.sets:
             for point in set_record.points:
@@ -571,6 +813,9 @@ def create_api_blueprint(
                         "ai_suggested_point_end_type": point.ai_suggested_point_end_type,
                         "ai_suggestion_reasoning": point.ai_suggestion_reasoning,
                         "footage_check": point.footage_check,
+                        # How each tracked value was obtained. Informational
+                        # only: it never clears the flag.
+                        "tracking": point_view(point.tracking) if point_view else None,
                         "shots": [
                             {
                                 "shot_number": s.shot_number,
@@ -595,6 +840,8 @@ def create_api_blueprint(
                 "reviewer_note": record.reviewer_note,
                 "player_appearance": record.player_appearance,
                 "footage_rally_count": record.footage_rally_count,
+                "source": "tracker" if record.tracking else "export",
+                "tracking": match_tracking,
                 "points": points,
             }
         )

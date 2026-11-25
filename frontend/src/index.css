@@ -403,3 +403,12 @@ body::before {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Labels drawn inside the placement court's SVG (viewBox units, so they
+   scale with the court). Text tokens, never a data colour. */
+.placement-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  fill: var(--color-dim);
+}

@@ -41,6 +41,7 @@ from swingvision_import.pipeline import SwingVisionImportPipeline  # noqa: E402
 from webapp.api import create_api_blueprint, register_media_route  # noqa: E402
 from webapp.config import WebAppConfig  # noqa: E402
 from webapp.pairing import PairingStore  # noqa: E402
+from webapp.tracking_jobs import Launcher  # noqa: E402
 
 _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 
@@ -70,6 +71,7 @@ def _load_cached_coaching_report(match_id: int) -> CoachingReport | None:
 def create_app(
     import_config: ImportConfig | None = None,
     webapp_config: WebAppConfig | None = None,
+    tracking_launcher: Launcher | None = None,
 ) -> Flask:
     """Builds the Flask app.
 
@@ -78,6 +80,8 @@ def create_app(
             ImportConfig() if not given.
         webapp_config: Upload/media directory settings. Defaults to
             WebAppConfig() if not given.
+        tracking_launcher: Starts video-tracking processes; the real
+            subprocess launcher when omitted. Tests inject a fake.
 
     Returns:
         A configured, ready-to-run Flask app.
@@ -115,7 +119,8 @@ def create_app(
         )
 
     app.register_blueprint(
-        create_api_blueprint(pipeline, import_config, webapp_config), url_prefix="/api"
+        create_api_blueprint(pipeline, import_config, webapp_config, tracking_launcher),
+        url_prefix="/api",
     )
     register_media_route(app, webapp_config.media_dir)
 

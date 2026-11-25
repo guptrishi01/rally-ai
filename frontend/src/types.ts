@@ -114,6 +114,8 @@ export interface StagedMatch {
   total_points: number
   flags_remaining: number
   confirmed_by_footage: number
+  /** "tracker" when staged from video by the independent tracker. */
+  source: 'export' | 'tracker'
 }
 
 export interface FlaggedPointShot {
@@ -198,6 +200,8 @@ export interface FlaggedPoint {
   ai_suggested_point_end_type: string | null
   ai_suggestion_reasoning: string | null
   footage_check: FootageCheck | null
+  /** How each tracked value was obtained; null for an imported point. */
+  tracking: PointTracking | null
   shots: FlaggedPointShot[]
 }
 
@@ -215,7 +219,107 @@ export interface PendingDetail {
   player_appearance: string | null
   /** Rallies in the footage, as the uploader counted them at intake. */
   footage_rally_count: number | null
+  source: 'export' | 'tracker'
+  /** The tracker's coverage line and counts; null for an imported match. */
+  tracking: MatchTracking | null
   points: FlaggedPoint[]
+}
+
+/** How one stored field of a tracked shot was obtained. A `guess` is a value
+ *  inferred from context with no evidence of its own. */
+export interface FieldProvenance {
+  field: string
+  label: string
+  provenance: 'measured' | 'interpolated' | 'inferred' | 'user_entered'
+  confidence: number | null
+  guess: boolean
+}
+
+export interface ShotProvenance {
+  /** "folded_fault" for a first-serve fault folded into this point. */
+  part: 'point' | 'folded_fault'
+  shot_number: number
+  tracked: boolean
+  confidence: number
+  fields: FieldProvenance[]
+  notes: string[]
+}
+
+export interface PointTracking {
+  kind: string
+  confidence: number
+  reasons: string[]
+  server_side: string | null
+  second_serve: boolean
+  folded_fault: boolean
+  shots: ShotProvenance[]
+}
+
+export interface MatchTracking {
+  notes: string[]
+  shots: number | null
+  tracked_shots: number | null
+  guessed_results: number | null
+  guessed_strokes: number | null
+  inferred_serves: number | null
+  models: Record<string, unknown>
+  video: string | null
+  range: [number, number] | null
+}
+
+/** The tracker's own latest progress report (TrackingProgress). */
+export interface TrackingProgress {
+  stage: string
+  chunks_total: number
+  chunks_done: number
+  chunks_resumed: number
+  video_seconds: number
+  video_seconds_done: number
+  elapsed_seconds: number
+  eta_seconds: number | null
+  seconds_per_video_minute: number | null
+  message: string
+}
+
+/** A video being tracked in its own process, keyed on the staged file it
+ *  will produce. */
+export interface TrackingJob {
+  json_filename: string
+  date: string
+  opponent: string
+  video: string
+  started_at: number | null
+  launches: number
+  state: 'running' | 'staged' | 'failed' | 'interrupted'
+  alive: boolean
+  error: string | null
+  progress: TrackingProgress | null
+}
+
+/** One bounce, already turned to face the hitter's way (hitter at the
+ *  bottom, net at y = 11.885 m). */
+export interface Bounce {
+  x: number
+  y: number
+  by: 'me' | 'opponent'
+  kind: 'serve' | 'rally'
+  result: string
+  stroke: string
+  point_number: number
+  shot_number: number
+  rotated: boolean
+  provenance: string | null
+}
+
+export interface Placement {
+  match_id: number
+  available: boolean
+  reason: string | null
+  source: 'export' | 'tracker' | null
+  shots: number
+  with_bounce: number
+  provenance: Record<string, number>
+  bounces: Bounce[]
 }
 
 export interface JournalFeedback {

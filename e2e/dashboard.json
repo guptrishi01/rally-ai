@@ -1,5 +1,5 @@
 {
-  "base_url": "http://127.0.0.1:5000",
+  "base_url": "http://127.0.0.1:5055",
   "viewports": [
     {
       "name": "desktop",
@@ -40,6 +40,113 @@
           "NaN",
           "[object Object]",
           "Invalid Date"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "track-intake",
+      "goto": "/",
+      "settle": 1200,
+      "actions": [
+        {
+          "click": "[data-testid='mode-track']"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "fill": [
+            "input[name='date']",
+            "2026-09-10"
+          ]
+        },
+        {
+          "fill": [
+            "input[name='opponent']",
+            "Casey"
+          ]
+        },
+        {
+          "fill": [
+            "input[name='host_name']",
+            "Test Player"
+          ]
+        },
+        {
+          "click": "#load button[type='submit']"
+        },
+        {
+          "wait": 600
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "input[name='video_file']",
+          "input[name='host_name']",
+          "input[name='guest_name']",
+          "select[name='host_starts']",
+          "select[name='host_hand']",
+          "select[name='guest_hand']",
+          "[data-testid='track-explainer']",
+          "[data-testid='tracking-job']"
+        ],
+        "selector_absent": [
+          "input[name='xlsx_files']",
+          "input[name='tracked_identity']",
+          "input[name='footage_rally_count']"
+        ],
+        "text_present": [
+          "track the video",
+          "730 MB",
+          "START TRACKING",
+          "Add the match video before starting tracking.",
+          "Tracking from video",
+          "close this tab",
+          "INTERRUPTED",
+          "RESUME TRACKING",
+          "chunk 7 of 20",
+          "318s per video minute",
+          "4:39:00",
+          "tracked from video"
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "review-tracked",
+      "goto": "/",
+      "settle": 1200,
+      "actions": [
+        {
+          "click": "[data-testid='resume-2026-09-02_Sam.json']"
+        },
+        {
+          "wait": 900
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "[data-testid='tracker-coverage']",
+          "[data-testid='tracker-point']"
+        ],
+        "text_present": [
+          "TRACKED FROM VIDEO, NOT IMPORTED",
+          "shots with confidence",
+          "HOW THE TRACKER READ THIS POINT",
+          "HOW IT IS KNOWN",
+          "seen",
+          "every one still needs your decision"
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
         ],
         "no_horizontal_scroll": true
       }
@@ -94,6 +201,87 @@
           "undefined",
           "NaN",
           "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "placement-tracked",
+      "goto": "/",
+      "settle": 800,
+      "actions": [
+        {
+          "click": "header nav button:nth-child(3)"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "click": "[data-testid='placement-who-opponent']"
+        },
+        {
+          "click": "[data-testid='placement-kind-serve']"
+        },
+        {
+          "wait": 400
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "[data-testid='placement'] svg circle",
+          "[data-testid='placement-coverage']"
+        ],
+        "text_present": [
+          "WHERE THE BALL LANDED",
+          "Tracked from video by Rally AI",
+          "bridged across a gap",
+          "shots in this match have a bounce position",
+          "hitter",
+          "FAINT: BOUNCE NOT MEASURED"
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]"
+        ],
+        "no_horizontal_scroll": true
+      }
+    },
+    {
+      "name": "placement-export",
+      "goto": "/",
+      "settle": 800,
+      "actions": [
+        {
+          "click": "header nav button:nth-child(3)"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "select": [
+            "section select.field",
+            "1"
+          ]
+        },
+        {
+          "wait": 1200
+        }
+      ],
+      "assert": {
+        "selector_present": [
+          "[data-testid='placement'] svg circle"
+        ],
+        "selector_absent": [],
+        "text_present": [
+          "Positions come from the SwingVision export.",
+          "OUT OR NET"
+        ],
+        "text_absent": [
+          "undefined",
+          "NaN",
+          "[object Object]",
+          "FAINT: BOUNCE NOT MEASURED"
         ],
         "no_horizontal_scroll": true
       }

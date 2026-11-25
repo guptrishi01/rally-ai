@@ -16,6 +16,7 @@ import type { MatchStats } from '../types'
 import Skeleton from '../components/Skeleton'
 import StatTile from '../components/StatTile'
 import Reveal from '../components/Reveal'
+import PlacementCourt from '../components/PlacementCourt'
 
 // Lazy: three.js/@react-three/fiber only load once someone actually views
 // the Statistics tab, keeping the rest of the app's bundle unaffected.
@@ -306,6 +307,19 @@ export default function Statistics() {
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
+                </div>
+              </div>
+
+              <div data-testid="placement-section">
+                <p className="eyebrow border-t border-[var(--color-line)] pt-5">
+                  Where the ball landed
+                </p>
+                <p className="mt-3 max-w-[60ch] text-[14px] leading-relaxed text-[var(--color-dim)]">
+                  Every bounce with a recorded position, on a court drawn to scale. Hover or tab
+                  to a dot to read the shot.
+                </p>
+                <div className="mt-6">
+                  <PlacementCourt matchId={selected.match_id} />
                 </div>
               </div>
             </motion.div>
