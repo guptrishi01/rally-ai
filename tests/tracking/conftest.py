@@ -241,3 +241,29 @@ def rotated_video(tmp_path_factory, steady_video):
         capture_output=True,
     )
     return path
+
+
+def exact_calibration(camera, size=SIZE):
+    """Calibrates from every template keypoint projected through a known camera.
+
+    Args:
+        camera: 3x4 projection from `make_camera`.
+        size: (width, height) of the image.
+
+    Returns:
+        The `Calibration` (tagged user-entered, as clicked points are).
+    """
+    from tracking import calibrate
+
+    template = court.court_template("doubles")
+    names = list(template.keypoints)
+    marks = np.array([template.keypoints[name] for name in names], dtype=float)
+    pixels = court.project(ground_homography(camera), marks)
+    clicks = {name: (float(x), float(y)) for name, (x, y) in zip(names, pixels)}
+    return calibrate.calibrate_from_points(clicks, size).require()
+
+
+@pytest.fixture(scope="session")
+def calibration(camera):
+    """The exact calibration of the standard test camera."""
+    return exact_calibration(camera)

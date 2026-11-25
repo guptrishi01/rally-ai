@@ -35,3 +35,13 @@ def test_irregular_timing_is_accepted_by_default():
 def test_the_package_exports_its_configs_and_provenance():
     assert tracking.TrackerConfig is TrackerConfig
     assert tracking.Provenance.MEASURED.value == "measured"
+
+
+def test_the_phase_three_stages_have_their_own_configs():
+    config = TrackerConfig()
+    assert isinstance(config.models, tracking.ModelConfig)
+    assert isinstance(config.players, tracking.PlayerConfig)
+    assert isinstance(config.ball, tracking.BallConfig)
+    assert config.models.weights_dir is None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.ball.max_gap_seconds = 1.0

@@ -10,3 +10,14 @@ imageio-ffmpeg>=0.5
 # Court-line detection and homography fitting for the independent tracker
 # (src/tracking/court.py, calibrate.py). Classic CV only - no ML weights.
 opencv-python>=4.8
+# Person detection for the independent tracker (src/tracking/players.py,
+# models/). Imported lazily: the app and `import tracking` work without them,
+# and the classic motion fallback needs neither.
+# torch: install the CPU build from PyTorch's own index, not PyPI's default:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.5
+# Ultralytics YOLO is AGPL-3.0 - acceptable because this project is open and
+# non-commercial; it would not be for a closed distribution. Weights download
+# to a per-user cache outside the repo (tracking.models.default_weights_dir)
+# and are never committed.
+ultralytics>=8.3
