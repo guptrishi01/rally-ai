@@ -2,7 +2,7 @@
 
 One frozen `TrackerConfig` holds a nested, frozen config per pipeline stage
 (`video`, `court`, `calibration`, `models`, `players`, `ball`, `events`,
-`strokes` so far). Later
+`strokes`, `segment`, `assemble` so far). Later
 phases add their own stage config as a new field with a default, so nothing
 already built has to change when they do.
 
@@ -697,6 +697,104 @@ class StrokeConfig:
 
 
 @dataclass(frozen=True)
+class SegmentConfig:
+    """Settings for splitting the shots into serve attempts and points.
+
+    Every time below was measured on the one real export available (the
+    2026-08-21 sheet, 683 shots): hits inside a point are at most 4.9s
+    apart (99% within 3.5s); a first-serve fault and its second serve are
+    5.6-34s apart (median 9.2s, 90% within 16.5s), while consecutive points
+    are at least 8.9s apart (median 30.6s); a server's feet are within
+    1.02m of the centre mark on every one of 174 serves, a returner's at
+    least 1.2m from it on all but a few.
+
+    Attributes:
+        rally_gap_seconds: Hits further apart than this are in different
+            rallies.
+        serve_quiet_seconds: A serve follows at least this long without a
+            confident hit by the other player.
+        quiet_breaker_confidence: A hit by the other player below this
+            confidence does not break the quiet. The events stage infers a
+            hit at 0.2 when the server's own ball-bounce before serving
+            looks like "the ball went and came back"; that must not cost
+            the real serve its quiet.
+        serve_behind_near_m: The near server's feet are no further inside
+            the baseline than this.
+        serve_behind_far_m: The same at the far end, wider because a far
+            footpoint is a metre-scale estimate (0.28m of depth per pixel
+            on the real recording).
+        serve_max_x_m: The server's feet are no further than this from the
+            centre line - which tells a serve from a return hit after a
+            serve nobody saw.
+        serve_strokes: Stroke labels a serve may carry. A serve is struck
+            overhead, so an `Overhead` after a quiet spell from behind the
+            baseline is a serve; a named forehand or backhand is not.
+        serve_lead_hits: A serve is preceded, inside its rally (since the
+            last silence or the other player's last confident hit), by at
+            most this many hits: the pre-serve bounce and the weak "return"
+            inferred from it. More means a rally is going on - its weak
+            inferred hits are real returns, timed badly.
+        serve_cluster_seconds: Serve candidates by the same player this
+            close together, with no confident hit by the other player
+            between, are one serve: the strongest is kept. The ball bounced
+            before serving is taken for a hit on the real recording.
+        second_serve_max_seconds: A serve attempt by the same server from
+            the same side within this long of a first serve that was not
+            played on makes that first serve a fault.
+        second_serve_unzoned_seconds: The same when either serving side is
+            unknown - shorter, since only the time is left to go on.
+        min_unserved_hits: A rally with no serve seen is taken for a point
+            (whose serve was missed) only with at least this many hits by
+            both players; anything less is play between points.
+        match_start: Seconds on the video's clock before which play is
+            warm-up and never a point. None: no warm-up is assumed.
+        zone_doubt_m: When the server's feet are within this of the centre
+            line - or were not seen - a seen serve bounce decides the
+            serving side instead (a serve lands diagonally opposite).
+    """
+
+    rally_gap_seconds: float = 5.0
+    serve_quiet_seconds: float = 4.0
+    quiet_breaker_confidence: float = 0.4
+    serve_behind_near_m: float = 0.6
+    serve_behind_far_m: float = 2.0
+    serve_max_x_m: float = 1.8
+    serve_strokes: tuple[str, ...] = ("Serve", "Overhead", "unknown")
+    serve_lead_hits: int = 2
+    serve_cluster_seconds: float = 4.0
+    second_serve_max_seconds: float = 20.0
+    second_serve_unzoned_seconds: float = 12.0
+    min_unserved_hits: int = 2
+    match_start: float | None = None
+    zone_doubt_m: float = 1.0
+
+
+@dataclass(frozen=True)
+class AssembleConfig:
+    """Settings for turning segmented shots into `RawShotRow`s.
+
+    Attributes:
+        confident_hit: A hit seen or bridged (not inferred) at least this
+            confident counts as "tracked with confidence" in the coverage
+            note.
+        center_line_m: A rally shot hit with the feet this close to the
+            centre line is in the sheet's `center_line` zone. Serves never
+            are: the sheet names them by the side served from.
+        unknown_stroke: What is emitted for a stroke the classifier could
+            not name. Not one of SwingVision's strokes, on purpose: the
+            review screens show it to a person, and a made-up "Forehand"
+            would be read as a finding.
+        far_weak_ratio: The far-end note is given when the far end has
+            fewer than this share of the near end's confident hits.
+    """
+
+    confident_hit: float = 0.4
+    center_line_m: float = 0.1
+    unknown_stroke: str = "Unknown"
+    far_weak_ratio: float = 0.6
+
+
+@dataclass(frozen=True)
 class TrackerConfig:
     """Everything the tracker is configured by, one field per stage.
 
@@ -709,6 +807,8 @@ class TrackerConfig:
         ball: Ball candidate detection and track linking settings.
         events: Hit, bounce, net and shot-result settings.
         strokes: Stroke classification settings.
+        segment: Serve-attempt and point segmentation settings.
+        assemble: `RawShotRow` emission settings.
     """
 
     video: VideoConfig = field(default_factory=VideoConfig)
@@ -719,3 +819,5 @@ class TrackerConfig:
     ball: BallConfig = field(default_factory=BallConfig)
     events: EventConfig = field(default_factory=EventConfig)
     strokes: StrokeConfig = field(default_factory=StrokeConfig)
+    segment: SegmentConfig = field(default_factory=SegmentConfig)
+    assemble: AssembleConfig = field(default_factory=AssembleConfig)

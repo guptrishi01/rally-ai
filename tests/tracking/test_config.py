@@ -57,3 +57,15 @@ def test_the_phase_four_stages_have_their_own_configs():
     assert config.models.pose_model == "yolo11n-pose"
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.events.call_sigmas = 2.0
+
+
+def test_the_phase_five_stages_have_their_own_configs():
+    config = TrackerConfig()
+    assert isinstance(config.segment, tracking.SegmentConfig)
+    assert isinstance(config.assemble, tracking.AssembleConfig)
+    # Thresholds measured on the real sheet, stated in the config itself.
+    assert config.segment.rally_gap_seconds == 5.0
+    assert config.segment.match_start is None
+    assert config.assemble.unknown_stroke == "Unknown"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.segment.serve_max_x_m = 3.0
