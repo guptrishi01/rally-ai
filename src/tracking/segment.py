@@ -45,9 +45,15 @@ serve was missed - kind `serve_unseen`; its first hit is taken for the
 return. Anything else - a ball hit back to the server, the pre-serve
 bounce, warm-up - is kind `excluded` and is emitted with shot type `none`,
 so `reconstruct` reports it as a non-match point rather than scoring it.
-No serve is ever invented: a `serve_unseen` point has no serve row, and
-`reconstruct` then treats it as served by the guest - a known error,
-counted in the notes.
+A `serve_unseen` point's serve is *inferred*, not seen, and its row (made
+by `assemble`) says so in every field's provenance. Who served is the
+player at the other end from the returner; the side served from is the
+returner's half (the receiver stands in the half with the serving side's
+name - 144 of 146 returns on the real sheet); the time is the return's
+minus `return_delay_seconds` (median 1.14s on the sheet, 90% within
+1.0-1.6s). It has no position, bounce or speed. Without it `reconstruct`
+would read every such point as served by the guest. Its rally shots are
+numbered from 2, the serve being shot 1.
 
 Roles
 -----
@@ -210,7 +216,8 @@ class Attempt:
         serve_zone: "deuce" or "ad", the side served from; None when
             unknown or not served.
         zone_source: "feet" when the server's position named the side,
-            "bounce" when the serve's landing did; None without a zone.
+            "bounce" when the serve's landing did, "return" when the
+            returner's half did (an unseen serve); None without a zone.
         second_serve: Whether this attempt is the second serve after a
             fault.
         fault: Whether this attempt's serve was judged a first-serve
@@ -218,6 +225,9 @@ class Attempt:
         confidence: 0 to 1, a ranking heuristic (0 for excluded groups,
             which are not scored).
         reasons: What set or lowered the confidence, in words.
+        serve_estimate: For a `serve_unseen` point, when its inferred
+            serve was struck, seconds - the return's time less
+            `return_delay_seconds`. None otherwise.
     """
 
     number: int
@@ -231,6 +241,7 @@ class Attempt:
     fault: bool = False
     confidence: float = 0.0
     reasons: tuple[str, ...] = ()
+    serve_estimate: float | None = None
 
     @property
     def start(self) -> float:
@@ -266,6 +277,7 @@ class Attempt:
             "fault": self.fault,
             "confidence": self.confidence,
             "reasons": list(self.reasons),
+            "serve_estimate": self.serve_estimate,
             "shots": [shot.to_dict() for shot in self.shots],
         }
 
@@ -660,26 +672,61 @@ def _unserved(shots: Sequence[Shot], members: list[int], config: SegmentConfig) 
     )
 
 
+@dataclass(frozen=True)
+class _Serve:
+    """Who served an attempt, from where and when - seen or inferred."""
+
+    server: str | None
+    side: str
+    zone: str | None
+    zone_source: str | None
+    pts: float
+
+
+def _serve_of(group: _Group, shots: Sequence[Shot], config: SegmentConfig) -> _Serve:
+    """The serve of a served or `serve_unseen` attempt.
+
+    For an unseen serve, the first hit is the return: the server is the
+    other person at the other end, served from the returner's half, the
+    return's delay before it.
+    """
+    first = shots[group.members[0]]
+    if group.kind == SERVED:
+        zone, source = serve_zone(first, config)
+        return _Serve(first.hit.player, first.hit.side, zone, source, first.hit.pts)
+    zone = first.hit.zone if first.hit.position is not None else None
+    return _Serve(
+        _other(first.hit.player),
+        FAR if first.hit.side == NEAR else NEAR,
+        zone,
+        None if zone is None else "return",
+        first.hit.pts - config.return_delay_seconds,
+    )
+
+
 def _judge_faults(shots: Sequence[Shot], groups: list[_Group], config: SegmentConfig) -> None:
     """Marks first-serve faults and the second serves that follow them.
 
     Only consecutive attempts that are not excluded are compared, exactly
-    as `reconstruct.reconstruct_all` does when it folds them.
+    as `reconstruct.reconstruct_all` does when it folds them. A first serve
+    must have been seen to be called a fault (a rally followed an unseen
+    one, so it was in); the second serve may be one inferred from its
+    return.
     """
     playing = [g for g in groups if g.kind != EXCLUDED]
     for one, two in zip(playing, playing[1:]):
-        if one.kind != SERVED or two.kind != SERVED or one.second:
+        if one.kind != SERVED or one.second:
             continue
-        first, second = shots[one.members[0]], shots[two.members[0]]
-        if first.hit.player != second.hit.player or first.hit.side != second.hit.side:
+        first, second = _serve_of(one, shots, config), _serve_of(two, shots, config)
+        if first.server != second.server or first.side != second.side:
             continue
-        if any(shots[i].hit.side == first.hit.side for i in one.members[1:]):
+        if any(shots[i].hit.side == first.side for i in one.members[1:]):
             continue  # the server played on: the serve was in
-        result = first.result
+        result = shots[one.members[0]].result
         if result.value == RESULT_IN and result.provenance in _BOUNCE_SEEN:
             continue  # a bounce put it in: a let, or a point, as reconstruct reads it
-        gap = second.hit.pts - first.hit.pts
-        zones = serve_zone(first, config)[0], serve_zone(second, config)[0]
+        gap = second.pts - first.pts
+        zones = first.zone, second.zone
         if zones[0] is not None and zones[1] is not None:
             fault = zones[0] == zones[1] and gap <= config.second_serve_max_seconds
         else:
@@ -717,24 +764,26 @@ def _attempt(
             for n, shot in enumerate(mine, start=1)
         )
         return Attempt(number, EXCLUDED, segmented, None, None, None, None, reasons=tuple(reasons))
-    places = _positions(mine, 0 if group.kind == SERVED else 1)
+    seen = group.kind == SERVED
+    places = _positions(mine, 0 if seen else 1)
     segmented = tuple(
         SegmentedShot(shot, labels.get(shot.index), n, role_for(place, group.second), place)
-        for n, (shot, place) in enumerate(zip(mine, places), start=1)
+        for n, (shot, place) in enumerate(zip(mine, places), start=1 if seen else 2)
     )
     first = mine[0].hit
-    if group.kind == SERVED:
-        zone, zone_source = serve_zone(mine[0], config)
+    serve = _serve_of(group, shots, config)
+    estimate = None
+    if seen:
         label = labels[mine[0].index]
         confidence = first.confidence * (label.stroke.confidence or 0.0)
-        side, server = first.side, first.player
         reasons.append(f"serve seen at {first.pts:.2f}s ({label.stroke.provenance.value})")
     else:
-        zone = zone_source = None
+        estimate = round(serve.pts, 3)
         confidence = _UNSERVED_BASE * max(shot.hit.confidence for shot in mine)
-        side = FAR if first.side == NEAR else NEAR
-        server = _other(first.player)
-        reasons.append("no serve was seen; the first hit is taken for the return")
+        reasons.append(
+            "no serve was seen; the first hit is taken for the return, and the serve is "
+            f"inferred from it at about {estimate:.2f}s"
+        )
     if group.contested:
         confidence *= _CONTESTED
         reasons.append("another hit just before it also looked like the serve")
@@ -757,14 +806,15 @@ def _attempt(
         number=number,
         kind=group.kind,
         shots=segmented,
-        server_side=side,
-        server=server,
-        serve_zone=zone,
-        zone_source=zone_source,
+        server_side=serve.side,
+        server=serve.server,
+        serve_zone=serve.zone,
+        zone_source=serve.zone_source,
         second_serve=group.second,
         fault=group.fault,
         confidence=round(confidence, 3),
         reasons=tuple(reasons),
+        serve_estimate=estimate,
     )
 
 

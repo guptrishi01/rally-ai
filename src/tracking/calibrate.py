@@ -129,6 +129,34 @@ class CalibrationQuality:
             "warnings": list(self.warnings),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> CalibrationQuality:
+        """Reads a quality back from `to_dict`'s form.
+
+        Args:
+            data: A dict as `to_dict` writes it.
+
+        Returns:
+            The quality, lists back as tuples.
+        """
+        lines = data.get("lines_found")
+        return cls(
+            points=int(data["points"]),
+            inliers=int(data["inliers"]),
+            residual_px_median=float(data["residual_px_median"]),
+            residual_px_max=float(data["residual_px_max"]),
+            residual_m_median=float(data["residual_m_median"]),
+            residual_m_max=float(data["residual_m_max"]),
+            near_depth_m_per_px=float(data["near_depth_m_per_px"]),
+            far_depth_m_per_px=float(data["far_depth_m_per_px"]),
+            far_lateral_m_per_px=float(data["far_lateral_m_per_px"]),
+            lines_found=None if lines is None else tuple(lines),
+            far_baseline_found=data.get("far_baseline_found"),
+            support=data.get("support"),
+            setup_score=float(data["setup_score"]),
+            warnings=tuple(data.get("warnings", ())),
+        )
+
 
 @dataclass(frozen=True)
 class Calibration:
@@ -190,6 +218,30 @@ class Calibration:
             "provenance": self.provenance.value,
             "quality": self.quality.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Calibration:
+        """Reads a calibration back from `to_dict`'s form.
+
+        The stored calibration was checked when it was made; it is not
+        re-checked here. The inverse is recomputed from the homography.
+
+        Args:
+            data: A dict as `to_dict` writes it.
+
+        Returns:
+            The calibration.
+        """
+        homography = np.asarray(data["homography"], dtype=float)
+        width, height = data["image_size"]
+        return cls(
+            homography=homography,
+            inverse=np.linalg.inv(homography),
+            image_size=(int(width), int(height)),
+            template_kind=data["template_kind"],
+            provenance=Provenance.parse(data["provenance"]),
+            quality=CalibrationQuality.from_dict(data["quality"]),
+        )
 
 
 @dataclass(frozen=True)

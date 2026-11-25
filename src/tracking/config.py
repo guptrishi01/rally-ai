@@ -2,7 +2,7 @@
 
 One frozen `TrackerConfig` holds a nested, frozen config per pipeline stage
 (`video`, `court`, `calibration`, `models`, `players`, `ball`, `events`,
-`strokes`, `segment`, `assemble` so far). Later
+`strokes`, `segment`, `assemble`, `pipeline`, `retraining`). Later
 phases add their own stage config as a new field with a default, so nothing
 already built has to change when they do.
 
@@ -751,6 +751,9 @@ class SegmentConfig:
         zone_doubt_m: When the server's feet are within this of the centre
             line - or were not seen - a seen serve bounce decides the
             serving side instead (a serve lands diagonally opposite).
+        return_delay_seconds: How long before a return its serve was
+            struck, for a serve inferred from the return: the sheet's
+            median (90% of returns came 1.0-1.6s after the serve).
     """
 
     rally_gap_seconds: float = 5.0
@@ -767,6 +770,7 @@ class SegmentConfig:
     min_unserved_hits: int = 2
     match_start: float | None = None
     zone_doubt_m: float = 1.0
+    return_delay_seconds: float = 1.14
 
 
 @dataclass(frozen=True)
@@ -781,17 +785,112 @@ class AssembleConfig:
             centre line is in the sheet's `center_line` zone. Serves never
             are: the sheet names them by the side served from.
         unknown_stroke: What is emitted for a stroke the classifier could
-            not name. Not one of SwingVision's strokes, on purpose: the
-            review screens show it to a person, and a made-up "Forehand"
-            would be read as a finding.
+            not name with any confidence. Not one of SwingVision's
+            strokes, on purpose: the review screens show it to a person,
+            and a made-up "Forehand" would be read as a finding.
         far_weak_ratio: The far-end note is given when the far end has
             fewer than this share of the near end's confident hits.
+        ad_scoring: Whether games are played with advantage (two clear
+            after deuce) - the rule unseen endings are settled by.
     """
 
     confident_hit: float = 0.4
     center_line_m: float = 0.1
-    unknown_stroke: str = "Unknown"
+    unknown_stroke: str = "Unclear"
     far_weak_ratio: float = 0.6
+    ad_scoring: bool = True
+
+
+@dataclass(frozen=True)
+class RetrainingConfig:
+    """When to tell the user a ball model retrained on their footage would help.
+
+    **Every threshold here is provisional.** No trained ball model exists
+    yet, so there is no measured baseline for "tracking as good as it gets";
+    the values below are set against what the classic detector did on the
+    one real recording (a daylight hard court) and are to be revisited once
+    a learned model and more recordings exist.
+
+    Attributes:
+        reference_brightness: Mean court-surface luminance (0..255) of the
+            daylight reference footage. Provisional: measured by the
+            Phase 6 real-footage run over 355-600s of the 2026-08-21
+            recording.
+        reference_court_rgb: Mean court-surface (R, G, B) of that footage.
+        dim_ratio: A court darker than this fraction of the reference's
+            brightness is "dim lighting (night or dusk)".
+        bright_ratio: Brighter than this multiple of it is "much brighter
+            than the reference (glare or a different surface)".
+        colour_distance: An RGB distance from the reference court colour
+            above this is "a court colour unlike the reference".
+        weak_coverage: Ball coverage over the rally stretches below this
+            counts as weak tracking. Mirrors `BallConfig.weak_coverage`.
+        weak_confidence: Mean ball confidence below this counts as weak.
+        weak_point_share: Weak tracking is also concluded when more than
+            this share of the points had weak ball tracking.
+        max_abstention: More than this share of shots with no result
+            counts as weak event reading.
+    """
+
+    reference_brightness: float = 120.0
+    reference_court_rgb: tuple[float, float, float] = (70.0, 110.0, 140.0)
+    dim_ratio: float = 0.6
+    bright_ratio: float = 1.5
+    colour_distance: float = 70.0
+    weak_coverage: float = 0.5
+    weak_confidence: float = 0.25
+    weak_point_share: float = 0.5
+    max_abstention: float = 0.6
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """How a whole recording is walked: chunks, overlap, checkpoints.
+
+    The tracker costs about 80ms a 1080p frame on the development CPU -
+    some 7.5 hours for a 95-minute match - and the machine is short on
+    memory. So the video is processed in bounded chunks, each written to
+    disk as it finishes, and a run that is killed resumes from the first
+    unfinished chunk.
+
+    Attributes:
+        chunk_seconds: Length of the stretch each chunk owns.
+        overlap_seconds: Extra video read on each side of a chunk, so the
+            ball linker, the event rules and the motion detector's clutter
+            map have context at the chunk's edges. Events are only kept
+            from the stretch a chunk owns (see `stitch_margin_seconds`).
+            Must exceed `stitch_margin_seconds` and should exceed the
+            longest gap between hits in a point (4.9s measured).
+        stitch_margin_seconds: Each chunk also keeps the events it found
+            this close beyond either edge of its own stretch. Where two
+            chunks saw the same event near their shared edge, one copy is
+            kept; this is what stops a hit timed 149.99s by one chunk and
+            150.01s by the next being kept twice or dropped.
+        stitch_tolerance_seconds: Two events of the same kind (and side)
+            from neighbouring chunks closer than this are the same event.
+            Below `EventConfig.min_flight_seconds` (0.3s), so two real
+            hits are never merged.
+        work_dir: Where checkpoints are kept; `<pending_dir>/tracking_work`
+            when None.
+        keep_checkpoints: Keep the chunk files after the match is staged,
+            so a re-stage after changing segmentation settings costs no
+            tracking. They are small (a few MB per chunk).
+        check_drift: Re-calibrate at the start of every chunk and note
+            any chunk where the court has moved in the picture.
+        drift_warn_px: Movement, in pixels, above which that note is made.
+        calibrate_at: Where in the run the court is calibrated from,
+            seconds after its start.
+    """
+
+    chunk_seconds: float = 150.0
+    overlap_seconds: float = 8.0
+    stitch_margin_seconds: float = 1.0
+    stitch_tolerance_seconds: float = 0.2
+    work_dir: Path | None = None
+    keep_checkpoints: bool = True
+    check_drift: bool = True
+    drift_warn_px: float = 6.0
+    calibrate_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -809,6 +908,8 @@ class TrackerConfig:
         strokes: Stroke classification settings.
         segment: Serve-attempt and point segmentation settings.
         assemble: `RawShotRow` emission settings.
+        pipeline: Chunking, overlap and checkpoint settings.
+        retraining: When the "retraining recommended" note is given.
     """
 
     video: VideoConfig = field(default_factory=VideoConfig)
@@ -821,3 +922,5 @@ class TrackerConfig:
     strokes: StrokeConfig = field(default_factory=StrokeConfig)
     segment: SegmentConfig = field(default_factory=SegmentConfig)
     assemble: AssembleConfig = field(default_factory=AssembleConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    retraining: RetrainingConfig = field(default_factory=RetrainingConfig)

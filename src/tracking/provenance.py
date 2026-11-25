@@ -156,6 +156,35 @@ class Tagged(Generic[T]):
             "source": self.source,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> Tagged:
+        """Reads a tagged value back from `to_dict`'s form.
+
+        A list value (how JSON stores a tuple, e.g. a court position)
+        comes back as a tuple.
+
+        Args:
+            data: A dict with "value" and "provenance", and optionally
+                "confidence" and "source".
+
+        Returns:
+            The tagged value.
+
+        Raises:
+            ValueError: If the provenance is unknown or the confidence is
+                outside 0..1.
+            KeyError: If "value" or "provenance" is missing.
+        """
+        value = data["value"]
+        if isinstance(value, list):
+            value = tuple(value)
+        return cls(
+            value,
+            Provenance.parse(data["provenance"]),
+            data.get("confidence"),
+            data.get("source"),
+        )
+
 
 def measured(value: T, confidence: float | None = None, source: str | None = None) -> Tagged[T]:
     """Tags a value as read off the pixels.

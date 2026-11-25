@@ -111,6 +111,12 @@ class PointRecord:
         resolution_reasoning: Claude's explanation of how it parsed
             review_answer into the resolved_* fields, for the human to
             sanity-check before applying.
+        tracking: For a point staged by the independent tracker, its
+            serve attempt's `tracking` block (confidence, reasons, a
+            provenance trace per shot, and the first-serve fault folded
+            into it, if any) - context for the reviewer, exactly like
+            footage_check, never a resolution. None for a SwingVision
+            import. Staged JSON only, never a database column.
         needs_review still isn't cleared by any of the above — a separate,
         explicit pipeline.apply_resolutions() call is what copies
         resolved_* onto the real fields and clears needs_review, so a
@@ -139,6 +145,7 @@ class PointRecord:
     resolved_point_won: bool | None = None
     resolved_net_approach: bool | None = None
     resolution_reasoning: str | None = None
+    tracking: dict | None = None
 
 
 @dataclass
@@ -270,6 +277,15 @@ class MatchRecord:
             data, for the AI coach to optionally cite. None for a
             direct-parse match (no raw shots involved) or when there was
             nothing to summarize.
+        tracking: For a match staged by the independent tracker
+            (`tracking.pipeline`) instead of from a SwingVision export: the
+            match-level `tracking` block - the video, the run, model
+            versions, coverage and quality, every serve attempt's trace,
+            and the emitted shot rows themselves (`"shots"`), which stand
+            in for the export when a later step re-reads the shots
+            (`sources.parse_sources`). Read it back with
+            `tracking.assemble.TrackingBlock.from_dict`. None for a
+            SwingVision import. Staged JSON only, never a database column.
     """
 
     date: str
@@ -292,6 +308,7 @@ class MatchRecord:
     sets: list[SetRecord] = field(default_factory=list)
     import_notes: list[str] = field(default_factory=list)
     shot_pattern_summary: dict[str, float] | None = None
+    tracking: dict | None = None
 
     def to_dict(self) -> dict:
         """Converts this record to a plain, JSON-serializable dict.

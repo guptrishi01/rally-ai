@@ -14,10 +14,14 @@ Field by field
   (`MatchSetup.host_player`), never guessed. A wrong `EndSwap` in the
   player tracks swaps host and guest from then on; the sidecar tags the
   name `inferred` after an inferred swap.
-* `stroke`: the label's stroke. A stroke the classifier could not name is
-  emitted as `AssembleConfig.unknown_stroke` ("Unknown") - not one of
-  SwingVision's strokes, so nobody reads it as a finding. `reconstruct`
-  only looks for volleys and overheads in it, so "Unknown" is tolerated.
+* `stroke`: the label's stroke. A stroke the classifier could not name
+  with any confidence is emitted as `AssembleConfig.unknown_stroke`
+  ("Unclear") - not one of SwingVision's strokes, so nobody reads it as a
+  finding - and the notes list every one as low-confidence. `reconstruct`
+  only looks for volleys and overheads in it, so "Unclear" is tolerated.
+* A `serve_unseen` point gets an **inferred serve row** as shot 1 (see
+  `segment`): who served, from which side and roughly when, all tagged
+  inferred. Without it `reconstruct` reads the point as the guest's serve.
 * `result`: the events stage's result where it has one. Where it does not
   (`None`), a guess from context, **always** listed in the sidecar's
   `guesses` with its reason: a shot hit back is `In`; a serve judged a
@@ -25,9 +29,14 @@ Field by field
   bounce was seen beyond it) and `Net` otherwise; a lone first serve not
   served again from that side is `In` (unreturned); a rally's last shot
   is `Out` if it crossed and `Net` otherwise - on the real sheet 62% of
-  points end on an error. A fault overrides an *inferred* `In` (the events
-  stage infers `In` whenever the other player hits next, and receivers
-  swat faults back); an `In` read off a bounce is never overridden.
+  points end on an error. Before those priors, a bounce too close to call
+  leans the way its measured margin points. After them, the rules of
+  scoring settle what they can (`endings`): a game's length and its seen
+  winners often leave one possible winner for an unseen point, and that
+  point's last result is set to match, tagged `endings-v1`. A fault
+  overrides an *inferred* `In` (the events stage infers `In` whenever the
+  other player hits next, and receivers swat faults back); an `In` read
+  off a bounce is never overridden.
 * `video_time`: the hit's time **on the video's own presentation clock**
   (PTS, seconds from the start of the file), not SwingVision's wall-clock
   `Video Time`. So the footage check needs no offset for tracker output:
@@ -60,6 +69,7 @@ from swingvision_import.footage import ClockOffset
 from swingvision_import.raw import RawMatchExport, RawSettings, RawShotRow
 from swingvision_import.reconstruct import ReconstructionResult
 
+from . import endings
 from .calibrate import Calibration
 from .config import AssembleConfig, StrokeConfig, TrackerConfig
 from .court import SINGLES_WIDTH_M
@@ -79,6 +89,8 @@ from .players import FAR, NEAR, SIDES, PlayerTracks
 from .provenance import Provenance, Tagged, provenance_counts
 from .segment import (
     EXCLUDED,
+    FIRST_SERVE,
+    SECOND_SERVE,
     SERVE_UNSEEN,
     SERVED,
     SHOT_TYPES,
@@ -226,7 +238,7 @@ class MatchSetup:
 
 
 def validate_row(
-    row: RawShotRow, settings: RawSettings, unknown_stroke: str = "Unknown"
+    row: RawShotRow, settings: RawSettings, unknown_stroke: str = "Unclear"
 ) -> list[str]:
     """Checks one row against the vocabularies `reconstruct` and the sheet use.
 
@@ -266,7 +278,7 @@ def validate_row(
     return problems
 
 
-def validate_export(export: RawMatchExport, unknown_stroke: str = "Unknown") -> list[str]:
+def validate_export(export: RawMatchExport, unknown_stroke: str = "Unclear") -> list[str]:
     """Checks every row, and the order and numbering between them.
 
     Args:
@@ -314,8 +326,10 @@ class ShotTrace:
     Attributes:
         point_number: The row's point number.
         shot_number: The row's shot number.
-        event_index: The shot's index in `EventTrack.shots`.
-        pts: The hit's time, seconds on the video's clock.
+        event_index: The shot's index in `EventTrack.shots`; None for a
+            serve inferred from its return (no event exists for it).
+        pts: The hit's time, seconds on the video's clock (estimated for
+            an inferred serve).
         time_uncertainty: How far off that may be, seconds.
         confidence: The hit's own confidence, 0 to 1.
         tracked: Whether the hit counts as tracked with confidence (seen
@@ -330,7 +344,7 @@ class ShotTrace:
 
     point_number: int
     shot_number: int
-    event_index: int
+    event_index: int | None
     pts: float
     time_uncertainty: float
     confidence: float
@@ -358,6 +372,180 @@ class ShotTrace:
             "notes": list(self.notes),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> ShotTrace:
+        """Reads a trace back from `to_dict`'s form (e.g. the staged JSON).
+
+        Args:
+            data: A dict as `to_dict` writes it.
+
+        Returns:
+            The trace; court positions come back as tuples.
+        """
+        return cls(
+            point_number=int(data["point_number"]),
+            shot_number=int(data["shot_number"]),
+            event_index=None if data["event_index"] is None else int(data["event_index"]),
+            pts=float(data["pts"]),
+            time_uncertainty=float(data["time_uncertainty"]),
+            confidence=float(data["confidence"]),
+            tracked=bool(data["tracked"]),
+            fields={name: Tagged.from_dict(value) for name, value in data["fields"].items()},
+            guesses=tuple(data.get("guesses", ())),
+            notes=tuple(data.get("notes", ())),
+        )
+
+
+@dataclass(frozen=True)
+class AttemptBlock:
+    """One serve attempt's `tracking` block, read back from the staged JSON.
+
+    Attributes:
+        number: Its point number (one per serve attempt).
+        kind: "served", "serve_unseen" or "excluded".
+        start: Its first hit's time, seconds on the video's clock.
+        end: Its last hit's time.
+        server_side: The server's end, or None.
+        server: The server's display name, or None.
+        serve_zone: "deuce" / "ad", or None.
+        zone_source: "feet" / "bounce", or None.
+        second_serve: Whether it is a second serve.
+        fault: Whether its serve was judged a first-serve fault.
+        confidence: Segmentation's 0..1 ranking heuristic.
+        reasons: What set or lowered that confidence.
+        shots: A trace per emitted row, in order.
+        folded_fault: The first-serve fault reconstruction folded into
+            this attempt, when there was one.
+        serve_estimate: For a serve inferred from its return, when it was
+            struck (seconds); None otherwise.
+    """
+
+    number: int
+    kind: str
+    start: float
+    end: float
+    server_side: str | None
+    server: str | None
+    serve_zone: str | None
+    zone_source: str | None
+    second_serve: bool
+    fault: bool
+    confidence: float
+    reasons: tuple[str, ...]
+    shots: tuple[ShotTrace, ...]
+    folded_fault: AttemptBlock | None = None
+    serve_estimate: float | None = None
+
+    def to_dict(self) -> dict:
+        """Serialises to the form `TrackedMatch.attempt_block` writes.
+
+        Returns:
+            Every attribute; `folded_fault` only when there is one.
+        """
+        out = {
+            "number": self.number,
+            "kind": self.kind,
+            "start": self.start,
+            "end": self.end,
+            "server_side": self.server_side,
+            "server": self.server,
+            "serve_zone": self.serve_zone,
+            "zone_source": self.zone_source,
+            "second_serve": self.second_serve,
+            "fault": self.fault,
+            "confidence": self.confidence,
+            "reasons": list(self.reasons),
+            "serve_estimate": self.serve_estimate,
+            "shots": [trace.to_dict() for trace in self.shots],
+        }
+        if self.folded_fault is not None:
+            out["folded_fault"] = self.folded_fault.to_dict()
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AttemptBlock:
+        """Reads an attempt block back.
+
+        Args:
+            data: A dict as `TrackedMatch.attempt_block` (or `to_dict`)
+                writes it.
+
+        Returns:
+            The block.
+        """
+        folded = data.get("folded_fault")
+        return cls(
+            number=int(data["number"]),
+            kind=data["kind"],
+            start=float(data["start"]),
+            end=float(data["end"]),
+            server_side=data.get("server_side"),
+            server=data.get("server"),
+            serve_zone=data.get("serve_zone"),
+            zone_source=data.get("zone_source"),
+            second_serve=bool(data.get("second_serve", False)),
+            fault=bool(data.get("fault", False)),
+            confidence=float(data.get("confidence", 0.0)),
+            reasons=tuple(data.get("reasons", ())),
+            shots=tuple(ShotTrace.from_dict(shot) for shot in data.get("shots", ())),
+            folded_fault=None if folded is None else cls.from_dict(folded),
+            serve_estimate=data.get("serve_estimate"),
+        )
+
+
+@dataclass(frozen=True)
+class TrackingBlock:
+    """A match's `tracking` block, read back from the staged JSON.
+
+    Attributes:
+        source: What produced it (`SOURCE`).
+        summary: Counts, provenance, model versions and quality.
+        notes: The tracker's informational notes.
+        attempts: Every serve attempt's block, in order.
+        extra: Every other key the block carried (the pipeline adds the
+            video, the run and the emitted rows), kept as stored.
+    """
+
+    source: str
+    summary: dict
+    notes: tuple[str, ...]
+    attempts: tuple[AttemptBlock, ...]
+    extra: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """Serialises back to the stored form.
+
+        Returns:
+            The block, `extra`'s keys included.
+        """
+        return {
+            **self.extra,
+            "source": self.source,
+            "summary": self.summary,
+            "notes": list(self.notes),
+            "attempts": [attempt.to_dict() for attempt in self.attempts],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TrackingBlock:
+        """Reads a match-level block back.
+
+        Args:
+            data: A dict as `TrackedMatch.tracking_block` writes it,
+                possibly with more keys.
+
+        Returns:
+            The block.
+        """
+        known = {"source", "summary", "notes", "attempts"}
+        return cls(
+            source=data.get("source", SOURCE),
+            summary=dict(data.get("summary", {})),
+            notes=tuple(data.get("notes", ())),
+            attempts=tuple(AttemptBlock.from_dict(a) for a in data.get("attempts", ())),
+            extra={key: value for key, value in data.items() if key not in known},
+        )
+
 
 def _plain(tagged: Tagged) -> dict:
     """A tagged value as JSON-ready types, tuples as lists."""
@@ -373,9 +561,14 @@ def _crossed(shot: Shot) -> bool:
     return shot.returned or landed_beyond
 
 
-def _guess(value: str, reason: str) -> tuple[Tagged, str]:
+def _guess(value: str, reason: str, confidence: float = 0.3) -> tuple[Tagged, str]:
     """A guessed result, tagged inferred at low confidence, with its reason."""
-    return Tagged(value, Provenance.INFERRED, 0.3, SOURCE), reason
+    return Tagged(value, Provenance.INFERRED, confidence, SOURCE), reason
+
+
+def _error(shot: Shot) -> str:
+    """How a shot that lost the point most likely failed: long if it crossed."""
+    return RESULT_OUT if _crossed(shot) else RESULT_NET
 
 
 def _result(attempt: Attempt, place: int) -> tuple[Tagged, str | None]:
@@ -410,6 +603,16 @@ def _result(attempt: Attempt, place: int) -> tuple[Tagged, str | None]:
         return _guess(RESULT_IN, "play between points: not judged")
     if after:
         return _guess(RESULT_IN, "the ball came back: another hit followed in the rally")
+    call = shot.call
+    if call is not None and call.value is None:
+        lean = RESULT_IN if call.margin_m >= 0 else RESULT_OUT
+        where = "inside" if call.margin_m >= 0 else "beyond"
+        return _guess(
+            lean,
+            f"the bounce was {abs(call.margin_m):.2f}m {where} the {call.line}, within its "
+            f"{call.uncertainty_m:.2f}m uncertainty: leaning {lean}",
+            0.4,
+        )
     if segmented.position == 0 and not attempt.second_serve:
         return _guess(RESULT_IN, "a lone first serve not served again from that side: unreturned")
     value = RESULT_OUT if _crossed(shot) else RESULT_NET
@@ -475,7 +678,8 @@ def _emit(
         stroke = config.unknown_stroke
         guesses.append("stroke")
         why = "no stroke label" if segmented.label is None else segmented.label.reason
-        notes.append(f"stroke not named ({why}): emitted as {stroke}")
+        notes.append(f"stroke too low-confidence to name ({why}): shown as {stroke}")
+        tagged["stroke"] = Tagged(stroke, Provenance.INFERRED, None, SOURCE)
     else:
         tagged["stroke"] = segmented.label.stroke
 
@@ -534,6 +738,140 @@ def _emit(
         notes=tuple(notes),
     )
     return row, trace
+
+
+def _inferred_serve(
+    attempt: Attempt, setup: MatchSetup, config: AssembleConfig
+) -> tuple[RawShotRow, ShotTrace]:
+    """Emits the serve of a `serve_unseen` point, inferred from its return.
+
+    Who served is the player at the other end from the returner, the side
+    the returner's half, the time the return's less the measured delay
+    (see `segment`). It is a conclusion, not a sighting: every field is
+    tagged inferred, and it has no position, bounce, speed or direction.
+    It is shot 1; the return is shot 2.
+    """
+    returned = attempt.shots[0].shot.hit
+    role = SECOND_SERVE if attempt.second_serve else FIRST_SERVE
+    name = setup.name(attempt.server)
+    pts = float(attempt.serve_estimate)
+    origin = Provenance.INFERRED
+    tagged = {
+        "player": Tagged(name, origin, None, "segment-v1"),
+        "hit_side": Tagged(attempt.server_side, origin, None, "segment-v1"),
+        "video_time": Tagged(pts, origin, None, "segment-v1"),
+        "shot_type": Tagged(role, origin, attempt.confidence, "segment-v1"),
+        "stroke": Tagged(STROKES[0], origin, None, "segment-v1"),
+        "result": Tagged(RESULT_IN, origin, 0.5, SOURCE),
+    }
+    if attempt.serve_zone is not None:
+        tagged["hit_zone"] = Tagged(attempt.serve_zone, origin, None, "segment-v1")
+    row = RawShotRow(
+        point_number=attempt.number,
+        shot_number=1,
+        player=name,
+        shot_type=role,
+        stroke=STROKES[0],
+        result=RESULT_IN,
+        video_time=round(pts, 3),
+        hit_side=attempt.server_side,
+        hit_zone=attempt.serve_zone,
+        source_part=0,
+    )
+    trace = ShotTrace(
+        point_number=attempt.number,
+        shot_number=1,
+        event_index=None,
+        pts=pts,
+        time_uncertainty=0.3,
+        confidence=0.0,
+        tracked=False,
+        fields=tagged,
+        guesses=("serve_row",),
+        notes=(
+            f"serve not seen: inferred from the return at {returned.pts:.2f}s - served by "
+            f"{name} from the {attempt.server_side} end, {attempt.serve_zone or 'unknown'} "
+            "side, about 1.1s before the return; In because it was returned",
+        ),
+    )
+    return row, trace
+
+
+# --------------------------------------------------------------------------
+# Endings: what the scoring rules decide
+# --------------------------------------------------------------------------
+
+
+def _settle_endings(
+    segmentation: Segmentation,
+    spans: dict[int, tuple[int, int]],
+    rows: list[RawShotRow],
+    traces: list[ShotTrace],
+    setup: MatchSetup,
+    config: AssembleConfig,
+) -> list[endings.GameVerdict]:
+    """Settles unseen point endings the rules of a game leave no choice about.
+
+    Changes, in place, the last row of every point `endings.settle_games`
+    decides: its result becomes whatever makes the decided player win (In
+    for the hitter's winner, else the error the ball most likely made),
+    tagged inferred by `endings-v1` with the reason in the trace.
+
+    Args:
+        segmentation: The attempts.
+        spans: Attempt number -> (first row index, end row index).
+        rows: Every emitted row.
+        traces: Their traces.
+        setup: For telling the host from the guest.
+        config: Supplies `ad_scoring`.
+
+    Returns:
+        The verdict on every run of one server's points.
+    """
+    facts, last = [], {}
+    shot_of = {}
+    for attempt in segmentation.attempts:
+        if attempt.kind == EXCLUDED or attempt.fault:
+            continue
+        first, end = spans[attempt.number]
+        index = end - 1
+        last[attempt.number] = index
+        shot_of[attempt.number] = attempt.shots[-1].shot
+        hitter = _person(rows[index].player, setup)
+        if "result" in traces[index].guesses:
+            won = None
+        else:
+            winner = hitter if rows[index].result == RESULT_IN else _other_person(hitter)
+            won = winner == attempt.server
+        facts.append(endings.PointFacts(attempt.number, attempt.server, attempt.serve_zone, won))
+    verdicts = endings.settle_games(facts, config.ad_scoring)
+    servers = {f.key: f.server for f in facts}
+    for verdict in verdicts:
+        for number, server_won in verdict.settled.items():
+            index = last[number]
+            hitter = _person(rows[index].player, setup)
+            winner = servers[number] if server_won else _other_person(servers[number])
+            value = RESULT_IN if winner == hitter else _error(shot_of[number])
+            rows[index] = replace(rows[index], result=value)
+            trace = traces[index]
+            fields = dict(trace.fields)
+            fields["result"] = Tagged(value, Provenance.INFERRED, 0.6, endings.SOURCE)
+            note = (
+                f"result settled by game scoring: {setup.name(winner)} must have won this point "
+                f"for its {len(verdict.keys)}-point game to add up"
+            )
+            traces[index] = replace(trace, fields=fields, notes=trace.notes + (note,))
+    return verdicts
+
+
+def _person(name: str, setup: MatchSetup) -> str:
+    """The tracked person ("A"/"B") behind a display name."""
+    return setup.host_player if name == setup.host_name else _other_person(setup.host_player)
+
+
+def _other_person(person: str) -> str:
+    """The other tracked person."""
+    return "B" if person == "A" else "A"
 
 
 # --------------------------------------------------------------------------
@@ -639,6 +977,7 @@ def tracking_notes(
     players: PlayerTracks | None = None,
     calibration: Calibration | None = None,
     config: AssembleConfig | None = None,
+    verdicts: Sequence[endings.GameVerdict] = (),
 ) -> list[str]:
     """Informational notes on what the tracker could and could not see.
 
@@ -651,6 +990,7 @@ def tracking_notes(
         players: The player tracks, for end-swap notes.
         calibration: The calibration, for its warnings.
         config: Supplies the far-end threshold and the unknown stroke.
+        verdicts: What scoring settled about unseen endings, if checked.
 
     Returns:
         Sentences, most important first.
@@ -659,6 +999,8 @@ def tracking_notes(
     attempts = segmentation.attempts
     counts = segmentation.counts()
     playing = [t for t in traces if t.fields["shot_type"].value != "none"]
+    inferred_serves = sum("serve_row" in t.guesses for t in playing)
+    playing = [t for t in playing if "serve_row" not in t.guesses]
     tracked = sum(t.tracked for t in playing)
     notes = [
         f"Tracked {tracked} of {len(playing)} shots with confidence (a hit seen or bridged, "
@@ -666,10 +1008,15 @@ def tracking_notes(
     ]
     points = counts[SERVED] + counts[SERVE_UNSEEN]
     notes.append(
-        f"{points} serve attempts: the serve was seen on {counts[SERVED]}; on "
-        f"{counts[SERVE_UNSEEN]} it was missed, and reconstruction will count those as "
-        "served by the guest whoever served."
+        f"{points} serve attempts: the serve was seen on {counts[SERVED]} and missed on "
+        f"{counts[SERVE_UNSEEN]}."
     )
+    if inferred_serves:
+        notes.append(
+            f"{inferred_serves} serve row(s) were inferred, not seen: the server is the player "
+            "at the other end from the return, the side is the returner's half, and the time "
+            "is estimated about 1.1s before the return. They have no position or speed."
+        )
     if counts["faults"]:
         notes.append(
             f"{counts['faults']} serve(s) read as a first-serve fault because the same player "
@@ -698,11 +1045,26 @@ def tracking_notes(
             f"{guessed_results} of {len(playing)} shot results were guessed from context, not "
             "seen; each says why in its trace."
         )
-    unknown = sum("stroke" in t.guesses for t in playing)
-    if unknown:
+    settled = sum(len(v.settled) for v in verdicts)
+    if settled:
         notes.append(
-            f"{unknown} of {len(playing)} strokes could not be named and are emitted as "
-            f"{config.unknown_stroke!r}."
+            f"{settled} of those unseen point endings were settled by the scoring rules: the "
+            "only way their game adds up."
+        )
+    broken = [v for v in verdicts if "missing" in v.reason or "no way" in v.reason]
+    if broken:
+        notes.append(
+            f"{len(broken)} game(s) do not add up as tracked - a point was probably missed or "
+            "an extra one found - so their unseen endings stay guesses."
+        )
+    unclear = [t for t in playing if "stroke" in t.guesses]
+    if unclear:
+        named = ", ".join(f"point {t.point_number} shot {t.shot_number}" for t in unclear[:15])
+        more = f" and {len(unclear) - 15} more" if len(unclear) > 15 else ""
+        notes.append(
+            f"Low confidence: {len(unclear)} of {len(playing)} strokes could not be named with "
+            f"any confidence and are shown as {config.unknown_stroke!r} ({named}{more}). "
+            "Treat them as unknown."
         )
     notes.extend(_ball_notes(segmentation.events, attempts))
     quality = segmentation.events.quality().notice()
@@ -725,6 +1087,7 @@ def _summary(
     segmentation: Segmentation,
     players: PlayerTracks | None,
     calibration: Calibration | None,
+    verdicts: Sequence[endings.GameVerdict] = (),
 ) -> dict:
     """The match-level numbers of the `tracking` block."""
     events = segmentation.events
@@ -738,6 +1101,8 @@ def _summary(
         "guesses": {
             "result": sum("result" in t.guesses for t in traces),
             "stroke": sum("stroke" in t.guesses for t in traces),
+            "serve_row": sum("serve_row" in t.guesses for t in traces),
+            "settled_by_scoring": sum(len(v.settled) for v in verdicts),
         },
         "provenance": {
             name: provenance_counts(t.fields[name].provenance for t in traces if name in t.fields)
@@ -749,6 +1114,7 @@ def _summary(
             "strokes": stroke_sources,
             "players": None if players is None else players.source,
             "segment": segmentation.source,
+            "endings": endings.SOURCE,
             "assemble": SOURCE,
         },
         "calibration": None if calibration is None else calibration.quality.to_dict(),
@@ -788,13 +1154,23 @@ def assemble(
         events, labels, config.segment, setup.stroke_config(config.strokes), tracking_start
     )
     rows, traces = [], []
+    spans = {}
     for attempt in segmentation.attempts:
+        begin = len(rows)
+        if attempt.kind == SERVE_UNSEEN and attempt.server is not None:
+            row, trace = _inferred_serve(attempt, setup, config.assemble)
+            rows.append(row)
+            traces.append(trace)
         for place in range(len(attempt.shots)):
             row, trace = _emit(attempt, place, setup, players, config.assemble)
             rows.append(row)
             traces.append(trace)
+        spans[attempt.number] = (begin, len(rows))
+    verdicts = _settle_endings(segmentation, spans, rows, traces, setup, config.assemble)
     export = RawMatchExport(settings=setup.settings(), shots=rows)
-    notes = tracking_notes(traces, segmentation, players, calibration, config.assemble)
-    summary = _summary(traces, segmentation, players, calibration)
+    notes = tracking_notes(
+        traces, segmentation, players, calibration, config.assemble, verdicts
+    )
+    summary = _summary(traces, segmentation, players, calibration, verdicts)
     logger.info("Assembled %d shot rows in %d attempts", len(rows), len(segmentation.attempts))
     return TrackedMatch(export, segmentation, tuple(traces), setup, tuple(notes), summary)

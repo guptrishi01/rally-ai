@@ -66,6 +66,6 @@ def test_the_phase_five_stages_have_their_own_configs():
     # Thresholds measured on the real sheet, stated in the config itself.
     assert config.segment.rally_gap_seconds == 5.0
     assert config.segment.match_start is None
-    assert config.assemble.unknown_stroke == "Unknown"
+    assert config.assemble.unknown_stroke == "Unclear"
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.segment.serve_max_x_m = 3.0

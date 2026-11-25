@@ -1711,6 +1711,33 @@ def _assemble(
     return shots, kept
 
 
+def join_shots(
+    hits: Sequence[HitEvent],
+    bounces: Sequence[BounceEvent],
+    nets: Sequence[NetEvent],
+    config: EventConfig | None = None,
+) -> tuple[list[Shot], list[BounceEvent]]:
+    """Joins hits to what became of the ball - for events gathered in pieces.
+
+    `detect_events` does this for one stretch. When a recording is
+    tracked in chunks, a shot hit at the end of one chunk may bounce in
+    the next, so the shots are joined again once every chunk's hits,
+    bounces and net contacts are together.
+
+    Args:
+        hits: Every hit, in time order.
+        bounces: Every bounce, in time order.
+        nets: Every net contact, in time order.
+        config: Thresholds; see `EventConfig`.
+
+    Returns:
+        One shot per hit, judged as a rally shot (`EventTrack.rejudged`
+        judges serves), and the bounces that remain - a bounce on the
+        hitter's own side is dropped when the ball plainly went over.
+    """
+    return _assemble(list(hits), list(bounces), list(nets), config or EventConfig())
+
+
 def detect_events(
     ball: BallTrack,
     players: PlayerTracks | None,

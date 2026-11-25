@@ -94,6 +94,13 @@ def main() -> None:
     config = footage.FootageConfig(**overrides)
     client = get_footage_client(args.via)
 
+    clock_offset = None
+    if load_pending(json_path).tracking is not None:
+        # Staged by the independent tracker: its times are the video's own
+        # timestamps, so there is no offset to measure from the audio.
+        from tracking.assemble import video_clock_offset
+
+        clock_offset = video_clock_offset
     held = _hold_back(json_path, args.limit) if args.limit else []
     try:
         summary = pipeline.verify_footage(
@@ -101,6 +108,7 @@ def main() -> None:
             json_path,
             args.videos,
             footage_config=config,
+            clock_offset=clock_offset,
             progress=lambda s: print(
                 f"  {s.checked} checked, {s.agreed} confirmed, {s.failed} failed", flush=True
             ),

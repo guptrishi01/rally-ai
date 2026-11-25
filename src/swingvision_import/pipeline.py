@@ -354,11 +354,16 @@ class SwingVisionImportPipeline:
 
         Returns:
             The archive's path, or None if the record had no source files
-            on disk to pack (already archived, or a record with none).
+            on disk to pack (already archived, or a record with none), or
+            was staged by the independent tracker from a video.
         """
         record = review.load_pending(json_path)
         if record.source_archive:
             return Path(record.source_archive)
+        if record.tracking is not None:
+            # A tracker-staged match's source is the recording itself:
+            # never zip it, never delete it.
+            return None
 
         sources = [Path(p) for p in (record.source_files or [])]
         if not sources and record.source_file:

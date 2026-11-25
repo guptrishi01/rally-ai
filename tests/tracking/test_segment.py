@@ -381,8 +381,12 @@ def test_a_rally_whose_serve_was_missed_is_a_point_without_a_serve_row():
     (attempt,) = run(piece).attempts
     assert attempt.kind == SERVE_UNSEEN
     assert roles(attempt) == [FIRST_RETURN, SERVE_PLUS_ONE, RETURN_PLUS_ONE]
+    assert [s.shot_number for s in attempt.shots] == [2, 3, 4]  # the serve is shot 1
     assert attempt.server_side == FAR and attempt.server == "B"
-    assert attempt.serve is None and attempt.serve_zone is None
+    assert attempt.serve is None
+    # The returner stood in their deuce half, so the serve came from deuce.
+    assert (attempt.serve_zone, attempt.zone_source) == ("deuce", "return")
+    assert attempt.serve_estimate == pytest.approx(10.0 - 1.14)
     assert attempt.confidence == pytest.approx(0.25 * 0.75, abs=1e-3)
     assert any("no serve was seen" in r for r in attempt.reasons)
     far_first = run(P.Piece([(P.hit(0.0, FAR, 3.0), FOREHAND), (P.hit(1.5, NEAR, 2.0), BACKHAND)]))

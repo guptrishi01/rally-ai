@@ -55,13 +55,13 @@ def golden():
 # (point, shot, player, shot_type, stroke, result, video_time, side, zone,
 #  hit_x, hit_y, bounce_x, bounce_y, speed) - checked by hand against the rules.
 GOLDEN = [
-    (1, 1, "Host", "none", "Unknown", "In", 10.0, "near", "deuce", 0.5, -0.4, None, None, None),
-    (1, 2, "Guest", "none", "Unknown", "In", 11.3, "far", "ad", 2.0, 24.2, None, None, None),
+    (1, 1, "Host", "none", "Unclear", "In", 10.0, "near", "deuce", 0.5, -0.4, None, None, None),
+    (1, 2, "Guest", "none", "Unclear", "In", 11.3, "far", "ad", 2.0, 24.2, None, None, None),
     (2, 1, "Host", "first_serve", "Serve", "In", 12.5, "near", "deuce", 0.5, -0.4, -2.0, 16.5,
      63.69),
     (2, 2, "Guest", "first_return", "Forehand", "In", 14.0, "far", "ad", 2.5, 24.2, None, None,
      None),
-    (2, 3, "Host", "serve_plus_one", "Unknown", "In", 15.5, "near", "ad", -2.5, -0.4, None, None,
+    (2, 3, "Host", "serve_plus_one", "Unclear", "In", 15.5, "near", "ad", -2.5, -0.4, None, None,
      None),
     (2, 4, "Guest", "return_plus_one", "Forehand", "Net", 17.0, "far", "ad", 2.5, 24.2, None,
      None, None),
@@ -158,8 +158,9 @@ def test_every_row_has_a_trace_saying_how_each_value_was_got():
     assert serve.tracked and serve.guesses == ()
     unknown = trace_of(match, 2, 3)
     assert unknown.guesses == ("stroke",)
-    assert "stroke" not in unknown.fields
-    assert "emitted as Unknown" in unknown.notes[0]
+    assert unknown.fields["stroke"].value == "Unclear"
+    assert unknown.fields["stroke"].confidence is None
+    assert "too low-confidence to name" in unknown.notes[0]
     junk = trace_of(match, 1, 2)
     assert not junk.tracked  # inferred, weak
 
@@ -301,11 +302,21 @@ def test_a_rally_ending_unseen_is_an_error_net_or_out_by_whether_it_crossed():
     into_net = made(P.rally(NEAR, "deuce", 3, end="unknown"))
     assert into_net.export.shots[-1].result == "Net"
     assert "read as an error" in trace_of(into_net, 1, 3).notes[0]
+    beyond = P.rally(NEAR, "deuce", 3, end="unknown")
+    beyond.bounces.append(P.bounce(3.8, 0.0, 26.0))  # far past the baseline...
+    gone = made(beyond)
+    assert gone.export.shots[-1].result == "Out"  # ...a measured Out, not a guess
+
+
+@pytest.mark.parametrize("y, lean, where", [(23.72, "In", "inside"), (23.82, "Out", "beyond")])
+def test_a_bounce_too_close_to_call_leans_the_way_its_margin_points(y, lean, where):
     close = P.rally(NEAR, "deuce", 3, end="unknown")
-    close.bounces.append(P.bounce(3.8, 0.0, 23.77))  # on the baseline: too close to call
-    crossed = made(close)
-    assert crossed.export.shots[-1].result == "Out"
-    assert "crossed the net" in trace_of(crossed, 1, 3).notes[0]
+    close.bounces.append(P.bounce(3.8, 0.0, y))  # within 0.1m of the baseline
+    match = made(close)
+    assert match.export.shots[-1].result == lean
+    trace = trace_of(match, 1, 3)
+    assert trace.fields["result"].confidence == 0.4
+    assert f"{where} the baseline" in trace.notes[0] and f"leaning {lean}" in trace.notes[0]
 
 
 def test_a_shot_followed_by_the_same_player_is_in_the_ball_came_back():
@@ -330,9 +341,14 @@ def test_play_between_points_is_not_judged():
 def test_a_shot_with_no_label_is_emitted_as_unknown_and_says_so():
     events, _ = P.build(P.rally(NEAR, "deuce", 2))
     match = assemble.assemble(events, (), SETUP)
-    assert [row.stroke for row in match.export.shots] == ["Serve", "Unknown"]
+    assert [row.stroke for row in match.export.shots] == ["Serve", "Unclear"]
     assert "no stroke label" in trace_of(match, 1, 2).notes[0]
+    assert any(
+        n.startswith("Low confidence: 1 of 2 strokes") and "(point 1 shot 2)" in n
+        for n in match.notes
+    )
     renamed = replace(TrackerConfig().assemble, unknown_stroke="Unclassified")
+    assert TrackerConfig().assemble.unknown_stroke == "Unclear"
     custom = assemble.assemble(events, (), SETUP, config=TrackerConfig(assemble=renamed))
     assert custom.export.shots[1].stroke == "Unclassified"
     assert assemble.validate_export(custom.export, "Unclassified") == []
@@ -534,7 +550,8 @@ def test_the_notes_count_against_their_denominators():
         "Tracked 5 of 5 shots with confidence (a hit seen or bridged, not inferred, at "
         "confidence 0.40 or more)."
     )
-    assert notes[1].startswith("2 serve attempts: the serve was seen on 1; on 1 it was missed")
+    assert notes[1] == "2 serve attempts: the serve was seen on 1 and missed on 1."
+    assert notes[2].startswith("1 serve row(s) were inferred, not seen")
     assert any(n.startswith("2 of 5 shot results were guessed") for n in notes)
     assert not any("far end is weak" in n for n in notes)
 
@@ -574,11 +591,16 @@ def test_the_tracking_block_is_plain_json_with_versions_and_provenance():
     assert summary["video_clock"] == "pts"
     assert summary["shots"] == 11 and summary["tracked_shots"] == 9
     assert summary["attempts"]["faults"] == 1
-    assert summary["guesses"] == {"result": 0, "stroke": 3}
+    assert summary["guesses"] == {
+        "result": 0,
+        "stroke": 3,
+        "serve_row": 0,
+        "settled_by_scoring": 0,
+    }
     assert summary["provenance"]["stroke"] == {
         "measured": 7,
         "interpolated": 0,
-        "inferred": 1,
+        "inferred": 4,  # the relabelled serve and three unclear strokes
         "user_entered": 0,
     }
     assert summary["models"] == {
@@ -587,6 +609,7 @@ def test_the_tracking_block_is_plain_json_with_versions_and_provenance():
         "strokes": ["segment-v1", "test"],
         "players": "fake-players",
         "segment": "segment-v1",
+        "endings": "endings-v1",
         "assemble": "assemble-v1",
     }
     assert summary["calibration"] is None and summary["player_quality"]["end_swaps"] == 1
@@ -627,7 +650,11 @@ def test_segmentation_and_assembly_share_the_configured_thresholds():
     events, labels = P.build(P.rally(NEAR, "deuce", 2))
     match = assemble.assemble(events, labels, SETUP, config=config)
     assert match.segmentation.attempts[0].kind == segment.SERVE_UNSEEN
-    assert match.export.shots[0].shot_type == "first_return"
+    # The near server, too wide to be one, is taken for a returner: the far
+    # player's serve is inferred in front of it.
+    shots = match.export.shots
+    assert [r.shot_type for r in shots] == ["first_serve", "first_return", "serve_plus_one"]
+    assert shots[0].player == "Guest" and shots[0].hit_side == "far"
 
 
 def test_assembly_passes_the_tracking_start_through():
@@ -638,3 +665,121 @@ def test_assembly_passes_the_tracking_start_through():
     assert assemble.assemble(events, labels, SETUP).export.shots[0].shot_type == "none"
     told = assemble.assemble(events, labels, SETUP, tracking_start=0.0)
     assert told.export.shots[0].shot_type == "first_serve"
+
+
+# --------------------------------------------------------------------------
+# Missed serves: an inferred serve row
+# --------------------------------------------------------------------------
+
+
+def missed_serve(side, returner_x=2.5, shots=3):
+    """A rally whose serve (by the other end) was not seen: it opens with the return."""
+    piece = P.Piece()
+    hitter = side
+    for n in range(shots):
+        x = returner_x if n == 0 else (-2.5 if n % 2 else 2.5)
+        piece.hits.append((P.hit(1.5 * n, hitter, x, P.BASELINE_Y[hitter]), FOREHAND))
+        hitter = P.other(hitter)
+    piece.nets.append(P.net(1.5 * (shots - 1) + 0.4))
+    return piece
+
+
+def test_a_missed_serve_gets_an_inferred_serve_row_so_the_server_is_right():
+    match = made(missed_serve(FAR, returner_x=-2.5))  # the far receiver in their deuce half
+    serve, back = match.export.shots[:2]
+    assert (serve.shot_number, serve.shot_type, serve.stroke, serve.result) == (
+        1,
+        "first_serve",
+        "Serve",
+        "In",
+    )
+    assert (serve.player, serve.hit_side, serve.hit_zone) == ("Host", "near", "deuce")
+    assert serve.video_time == pytest.approx(10.0 - 1.14)
+    assert serve.hit_x is None and serve.bounce_x is None and serve.speed_mph is None
+    assert (back.shot_number, back.shot_type) == (2, "first_return")
+    trace = trace_of(match, 1, 1)
+    assert trace.event_index is None and not trace.tracked and trace.guesses == ("serve_row",)
+    assert all(f.provenance is Provenance.INFERRED for f in trace.fields.values())
+    assert "serve not seen: inferred from the return at 10.00s" in trace.notes[0]
+    assert assemble.validate_export(match.export) == []
+    result = reconstruct.reconstruct_all(match.export.shots, "Host")
+    assert result.points[0].is_serving  # the host served, as the far return implies
+
+
+def test_a_seen_fault_folds_into_a_second_serve_inferred_from_its_return():
+    match = made(P.serve(NEAR, "deuce", landing="net"), (6.0, missed_serve(FAR, -2.5)))
+    second = match.export.shots[1]
+    assert (second.shot_type, second.hit_zone) == ("second_serve", "deuce")
+    assert match.export.shots[2].shot_type == "second_return"
+    result = reconstruct.reconstruct_all(match.export.shots, "Host")
+    assert result.merged_fault_points == [1]
+    assert result.points[0].first_serve_in is False and result.points[0].second_serve_in
+
+
+def test_the_inferred_serve_row_reads_back_through_the_loader():
+    match = made(missed_serve(FAR))
+    block = json.loads(json.dumps(match.tracking_block()))
+    back = assemble.TrackingBlock.from_dict(block)
+    (attempt,) = back.attempts
+    assert attempt.serve_estimate == pytest.approx(10.0 - 1.14)
+    assert attempt.shots[0].event_index is None
+    assert attempt.shots[0] == match.traces[0]
+    assert attempt.to_dict() == block["attempts"][0]
+
+
+# --------------------------------------------------------------------------
+# Endings settled by scoring
+# --------------------------------------------------------------------------
+
+
+def test_scoring_settles_endings_the_tracker_did_not_see():
+    hold_near = hold(NEAR, "A")
+    unseen = [
+        P.serve(FAR, "deuce", person="B"),
+        P.rally(FAR, "ad", 3, end="unknown", person="B"),
+        P.serve(FAR, "deuce", person="B"),
+        P.rally(FAR, "ad", 3, end="unknown", person="B"),
+    ]
+    match = made(*hold_near, *unseen, *hold_near)
+    # The guest's four-point game: two aces were seen, so all four were theirs.
+    rallies = [r for r in match.export.shots if r.point_number in (6, 8)]
+    lasts = [r for r in rallies if r.shot_number == 3]
+    assert [r.result for r in lasts] == ["In", "In"]  # the guest's own last shots won
+    trace = trace_of(match, 6, 3)
+    assert trace.fields["result"].source == "endings-v1"
+    assert "settled by game scoring: Guest must have won" in trace.notes[-1]
+    assert "result" in trace.guesses  # still not seen
+    assert match.summary["guesses"]["settled_by_scoring"] == 2
+    assert any(n.startswith("2 of those unseen point endings were settled") for n in match.notes)
+    result = reconstruct.reconstruct_all(match.export.shots, "Host")
+    assert [(s.games_won, s.games_lost) for s in result.sets] == [(2, 1)]
+
+
+def test_a_game_that_does_not_add_up_keeps_its_guesses_and_says_so():
+    odd = [
+        P.serve(FAR, "ad", person="B"),  # a game cannot start from the ad side
+        P.rally(FAR, "deuce", 3, end="unknown", person="B"),
+        P.serve(FAR, "ad", person="B"),
+        P.serve(FAR, "deuce", person="B"),
+    ]
+    match = made(*hold(NEAR, "A"), *odd, *hold(NEAR, "A"))
+    assert match.summary["guesses"]["settled_by_scoring"] == 0
+    assert any(n.startswith("1 game(s) do not add up as tracked") for n in match.notes)
+    assert trace_of(match, 6, 3).fields["result"].source == "assemble-v1"
+
+
+def test_a_double_fault_the_rules_say_was_lost_stays_an_error():
+    unseen = [
+        P.serve(FAR, "deuce", person="B", landing="net"),
+        (6.0, P.serve(FAR, "deuce", person="B", landing="unseen")),
+        P.rally(FAR, "ad", 3, end="net", person="B"),
+        P.rally(FAR, "deuce", 3, end="net", person="B"),
+        P.rally(FAR, "ad", 3, end="net", person="B"),
+    ]
+    match = made(*hold(NEAR, "A"), *unseen, *hold(NEAR, "A"))
+    # The guest lost three seen points, so the game (and the double fault) went to the host.
+    second = next(r for r in match.export.shots if r.shot_type == "second_serve")
+    assert second.result == "Net"
+    assert "settled by game scoring: Host must have won" in trace_of(
+        match, second.point_number, 1
+    ).notes[-1]

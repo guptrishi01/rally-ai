@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import bisect
 import logging
+import pickle
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
@@ -249,9 +250,13 @@ class MotionPersonDetector:
 
     Attributes:
         name: "motion-person-v1".
+        stateful: True - a checkpoint of a `PlayerTracker` using it keeps
+            its background model.
     """
 
     name = "motion-person-v1"
+    # Its background model is state: `PlayerTracker.snapshot` keeps it.
+    stateful = True
 
     def __init__(
         self, calibration: Calibration | None = None, config: PlayerConfig | None = None
@@ -970,11 +975,37 @@ class _Run:
     judged: bool = False
 
 
+@dataclass(frozen=True)
+class ObservationBatch:
+    """What a `PlayerTracker` recorded since its observations were last taken.
+
+    Attributes:
+        near: Near-end detections, in time order, **not yet labelled**
+            with the person (`player` is ""): a change of ends judged
+            later can still relabel them. Label them with `label_tracks`.
+        far: Far-end detections, likewise.
+        detector_times: When the detector ran.
+        rejected_people: Detections discarded as not on this court.
+    """
+
+    near: tuple[PlayerObservation, ...]
+    far: tuple[PlayerObservation, ...]
+    detector_times: tuple[float, ...]
+    rejected_people: int
+
+
 class PlayerTracker:
     """Follows the two players of one court through a stream of frames.
 
     Feed frames in order with `update`; collect the result with `finish`.
     The detector runs on every `PlayerConfig.stride`-th frame fed.
+
+    A long recording can be followed in pieces without keeping every
+    observation in memory: `take_observations` hands over (and forgets)
+    what was recorded so far, and `snapshot` / `resume` save and restore
+    everything else - the association tracks, the settled arrangement, the
+    swaps, the stride's phase - so a tracker restored from a snapshot
+    carries on exactly as the original would have.
     """
 
     def __init__(
@@ -1248,6 +1279,79 @@ class PlayerTracker:
         )
         logger.info("End swap (%s) from %.2fs: %s", provenance.value, run.pts, reason)
 
+    @property
+    def swaps(self) -> tuple[EndSwap, ...]:
+        """Every change of ends recorded so far, in time order."""
+        return tuple(self._swaps)
+
+    @property
+    def detector_name(self) -> str:
+        """The detector's provenance name."""
+        return self._detector.name
+
+    def take_observations(self) -> ObservationBatch:
+        """Hands over what was recorded since the last call, and forgets it.
+
+        Returns:
+            The unlabelled observations, detector times and rejection
+            count accumulated since the tracker was made, resumed, or
+            last asked.
+        """
+        batch = ObservationBatch(
+            near=tuple(self._observations[NEAR]),
+            far=tuple(self._observations[FAR]),
+            detector_times=tuple(self._times),
+            rejected_people=self._rejected,
+        )
+        self._observations = {NEAR: [], FAR: []}
+        self._times = []
+        self._rejected = 0
+        return batch
+
+    def snapshot(self) -> bytes:
+        """Saves the tracker's state, to carry on from later.
+
+        The detector is saved with it only when it says it is `stateful`
+        (the motion detector's background model); a learned detector is
+        stateless and is handed back to `resume` instead.
+
+        Returns:
+            The pickled state. Load it only with `resume`, and only from
+            a file this program wrote.
+        """
+        detector = self._detector
+        if not getattr(detector, "stateful", False):
+            self._detector = None
+        try:
+            return pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)
+        finally:
+            self._detector = detector
+
+    @classmethod
+    def resume(cls, snapshot: bytes, detector: PersonDetector | None = None) -> PlayerTracker:
+        """Restores a tracker from `snapshot`.
+
+        Args:
+            snapshot: What `snapshot` returned.
+            detector: The detector to carry on with, when the snapshot did
+                not keep its own.
+
+        Returns:
+            The tracker, as it was when the snapshot was taken.
+
+        Raises:
+            ValueError: If the snapshot kept no detector and none is given.
+            TypeError: If the snapshot is not of a `PlayerTracker`.
+        """
+        tracker = pickle.loads(snapshot)  # noqa: S301 - our own checkpoint file
+        if not isinstance(tracker, cls):
+            raise TypeError("The snapshot is not of a player tracker.")
+        if tracker._detector is None:
+            if detector is None:
+                raise ValueError("This snapshot kept no detector; pass the one to resume with.")
+            tracker._detector = detector
+        return tracker
+
     def finish(self) -> PlayerTracks:
         """Returns everything tracked so far.
 
@@ -1272,6 +1376,50 @@ class PlayerTracker:
             for side in SIDES
         }
         return replace(tracks, near=labelled[NEAR], far=labelled[FAR])
+
+
+def label_tracks(
+    near: Sequence[PlayerObservation],
+    far: Sequence[PlayerObservation],
+    swaps: Sequence[EndSwap],
+    detector_times: Sequence[float],
+    source: str,
+    config: PlayerConfig | None = None,
+    rejected_people: int = 0,
+) -> PlayerTracks:
+    """Builds `PlayerTracks` from observations gathered in pieces.
+
+    Every observation is labelled with its person from `swaps` alone, as
+    `PlayerTracker.finish` does - so observations taken out of a tracker
+    before a later change of ends was judged come out right.
+
+    Args:
+        near: Near-end observations, in time order.
+        far: Far-end observations, in time order.
+        swaps: Every change of ends, in time order.
+        detector_times: When the detector ran.
+        source: The detector's name.
+        config: Supplies the longest gap `PlayerTracks.at` bridges.
+        rejected_people: Detections discarded as not on this court.
+
+    Returns:
+        The labelled tracks.
+    """
+    config = config or PlayerConfig()
+    tracks = PlayerTracks(
+        near=(),
+        far=(),
+        swaps=tuple(swaps),
+        detector_times=tuple(detector_times),
+        source=source,
+        max_interpolation_seconds=config.max_interpolation_seconds,
+        rejected_people=rejected_people,
+    )
+    return replace(
+        tracks,
+        near=tuple(replace(o, player=tracks.player_at(o.pts, NEAR)) for o in near),
+        far=tuple(replace(o, player=tracks.player_at(o.pts, FAR)) for o in far),
+    )
 
 
 def track_players(
