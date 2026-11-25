@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BALL_HEATMAP",
     "PERSON_YOLO",
+    "POSE_YOLO",
     "REGISTRY",
     "BackendMissingError",
     "LoadedModel",
@@ -52,6 +53,7 @@ __all__ = [
     "import_backend",
     "load_ball_heatmap",
     "load_person_model",
+    "load_pose_model",
     "model_spec",
     "weights_checksum",
 ]
@@ -79,7 +81,7 @@ class ModelSpec:
 
     Attributes:
         name: The registry key, e.g. "yolo11n".
-        task: What it is for: "person" or "ball_heatmap".
+        task: What it is for: "person", "pose" or "ball_heatmap".
         backend: The Python package that runs it.
         weights: The weights file's name, or None when none exist yet.
         release: The upstream release the weights belong to.
@@ -115,7 +117,19 @@ BALL_HEATMAP = ModelSpec(
     licence="first-party",
 )
 
-REGISTRY: dict[str, ModelSpec] = {spec.name: spec for spec in (PERSON_YOLO, BALL_HEATMAP)}
+POSE_YOLO = ModelSpec(
+    name="yolo11n-pose",
+    task="pose",
+    backend="ultralytics",
+    weights="yolo11n-pose.pt",
+    release="ultralytics assets v8.4.0",
+    licence="AGPL-3.0",
+    sha256="869e83fcdffdc7371fa4e34cd8e51c838cc729571d1635e5141e3075e9319dc0",
+)
+
+REGISTRY: dict[str, ModelSpec] = {
+    spec.name: spec for spec in (PERSON_YOLO, BALL_HEATMAP, POSE_YOLO)
+}
 
 
 @dataclass(frozen=True)
@@ -234,6 +248,37 @@ def load_person_model(config: ModelConfig | None = None) -> LoadedModel:
     spec = model_spec(config.person_model)
     if spec.task != "person" or spec.weights is None:
         raise ModelError(f"{spec.name!r} is not a person detector.")
+    return _load_yolo(spec, config)
+
+
+def load_pose_model(config: ModelConfig | None = None) -> LoadedModel:
+    """Loads the pinned pose model, downloading its weights if absent.
+
+    Same rules as `load_person_model`: per-user folder, absolute path,
+    checksum enforced.
+
+    Args:
+        config: Which model, where its weights are kept, and whether the
+            file's checksum is enforced.
+
+    Returns:
+        The loaded model with its provenance string.
+
+    Raises:
+        ModelError: If the configured model is not a pose model.
+        BackendMissingError: If ultralytics (or torch under it) is not
+            installed.
+        WeightsChecksumError: If the weights file is not the pinned one.
+    """
+    config = config or ModelConfig()
+    spec = model_spec(config.pose_model)
+    if spec.task != "pose" or spec.weights is None:
+        raise ModelError(f"{spec.name!r} is not a pose model.")
+    return _load_yolo(spec, config)
+
+
+def _load_yolo(spec: ModelSpec, config: ModelConfig) -> LoadedModel:
+    """Loads one pinned Ultralytics model from the weights folder."""
     backend = import_backend(spec.backend)
     folder = Path(config.weights_dir) if config.weights_dir else default_weights_dir()
     folder.mkdir(parents=True, exist_ok=True)
@@ -249,7 +294,7 @@ def load_person_model(config: ModelConfig | None = None) -> LoadedModel:
         _verify(path, spec)
     version = getattr(backend, "__version__", "unknown")
     source = f"{spec.name}@{spec.backend}-{version}"
-    logger.info("Loaded person model %s from %s", source, path)
+    logger.info("Loaded %s model %s from %s", spec.task, source, path)
     return LoadedModel(spec=spec, model=model, source=source, weights_path=path)
 
 

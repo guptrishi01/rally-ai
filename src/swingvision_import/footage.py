@@ -371,6 +371,38 @@ _AUDIO_RATE = 8000
 _AUDIO_HOP = 80  # 10 ms
 
 
+def onset_envelope(samples: np.ndarray, sample_rate: int = _AUDIO_RATE) -> np.ndarray | None:
+    """Turns audio into "how suddenly did it get louder", every 10 ms.
+
+    A ball being struck is a sharp sound: the high-frequency energy of the
+    recording jumps within one 10 ms step. This is the envelope
+    `offset_from_audio` slides shot times along, exposed on its own so the
+    independent tracker can use the same strikes as a cue for *when* a
+    ball was hit.
+
+    Args:
+        samples: Mono audio samples.
+        sample_rate: Samples per second.
+
+    Returns:
+        One value per 10 ms step: the rise in edge energy over the step
+        before, as a multiple of the recording's 99th-percentile rise,
+        capped at 3. None when there is too little audio, or none of it
+        ever rises.
+    """
+    hop = max(1, sample_rate // 100)
+    frames = len(samples) // hop
+    if frames < 3:
+        return None
+    edges = np.diff(samples.astype(np.float32), prepend=np.float32(samples[0]))
+    energy = np.sqrt((edges[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
+    onset = np.maximum(0.0, np.diff(energy, prepend=energy[0]))
+    ceiling = float(np.percentile(onset, 99))
+    if ceiling <= 0:
+        return None
+    return np.minimum(onset / ceiling, 3.0)
+
+
 def offset_from_audio(
     samples: np.ndarray,
     shot_times: list[float],
@@ -397,17 +429,12 @@ def offset_from_audio(
         The best offset and how clearly it stands out, or None when there
         is no audio or no shot inside the recording.
     """
-    hop = max(1, sample_rate // 100)
-    frames = len(samples) // hop
-    if frames < 3 or not shot_times:
+    if not shot_times:
         return None
-    edges = np.diff(samples.astype(np.float32), prepend=np.float32(samples[0]))
-    energy = np.sqrt((edges[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
-    onset = np.maximum(0.0, np.diff(energy, prepend=energy[0]))
-    ceiling = float(np.percentile(onset, 99))
-    if ceiling <= 0:
+    onset = onset_envelope(samples, sample_rate)
+    if onset is None:
         return None
-    onset = np.minimum(onset / ceiling, 3.0)
+    frames = len(onset)
     # A strike within 20 ms either side still counts.
     padded = np.pad(onset, 2)
     near = np.maximum.reduce([padded[i : i + frames] for i in range(5)])

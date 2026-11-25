@@ -45,3 +45,15 @@ def test_the_phase_three_stages_have_their_own_configs():
     assert config.models.weights_dir is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.ball.max_gap_seconds = 1.0
+
+
+def test_the_phase_four_stages_have_their_own_configs():
+    config = TrackerConfig()
+    assert isinstance(config.events, tracking.EventConfig)
+    assert isinstance(config.strokes, tracking.StrokeConfig)
+    assert config.events.court == "singles"
+    # Right-handed until intake asks: an assumption, stated in the config itself.
+    assert dict(config.strokes.handedness) == {"A": "right", "B": "right"}
+    assert config.models.pose_model == "yolo11n-pose"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.events.call_sigmas = 2.0

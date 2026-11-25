@@ -1,7 +1,8 @@
 """Configuration for the independent tracker.
 
 One frozen `TrackerConfig` holds a nested, frozen config per pipeline stage
-(`video`, `court`, `calibration`, `models`, `players`, `ball` so far). Later
+(`video`, `court`, `calibration`, `models`, `players`, `ball`, `events`,
+`strokes` so far). Later
 phases add their own stage config as a new field with a default, so nothing
 already built has to change when they do.
 
@@ -213,6 +214,7 @@ class ModelConfig:
     Attributes:
         person_model: Name of the pinned person-detector entry in
             `tracking.models.REGISTRY`.
+        pose_model: Name of the pinned pose-model entry there.
         weights_dir: Folder weights are downloaded to and loaded from, or
             None for a per-user cache folder **outside the repository**
             (`tracking.models.default_weights_dir`). Weights are never
@@ -222,6 +224,7 @@ class ModelConfig:
     """
 
     person_model: str = "yolo11n"
+    pose_model: str = "yolo11n-pose"
     weights_dir: Path | None = None
     verify_checksum: bool = True
 
@@ -477,6 +480,223 @@ class BallConfig:
 
 
 @dataclass(frozen=True)
+class EventConfig:
+    """Settings for turning the ball's track into hits, bounces and shots.
+
+    Lengths are metres on the court, pixel lengths fractions of the image
+    width, and times seconds.
+
+    Attributes:
+        fit_seconds: Stretch of track fitted on each side of a frame when
+            the velocity before and after it are compared.
+        min_fit_points: Fewest positions such a fit needs.
+        min_kink_mps: Smallest change of velocity, in metres per second on
+            the ground at that image row, that counts as a kink. A ball
+            dropped from 0.4m changes its vertical speed by about 5 m/s
+            when it bounces; less than this is tracking wobble.
+        min_kink_ratio: The change must also be at least this fraction of
+            the ball's own speed there - a fast ball's image speed drifts
+            smoothly with perspective, and that drift is not an event.
+        kink_separation_seconds: Two kinks closer than this are one.
+        confusion_fraction: A ball segment at least this much inside a
+            player's box is taken to be their racket or hand, not the
+            ball, and is left out of the trajectory.
+        max_junction_seconds: Longest unseen stretch between two segments
+            across which their paths are extended to look for the one
+            event - a hit or a bounce - that joins them. Across a longer
+            one nothing is placed in the gap: the later segment is an
+            appearance, and a bounce in the gap is not reported.
+        max_lookback_seconds: How far back, at most, the path of a ball
+            that appears mid-flight is followed to find when it left a
+            player.
+        junction_miss: How far apart, as a fraction of image width, the
+            two extended paths may pass and still count as meeting...
+        junction_miss_seconds: ...plus this many seconds of the ball's own
+            speed there.
+        reach_m: How far from a player's box, in metres at their own
+            distance, the ball may be and still be within reach of their
+            racket.
+        player_lookup_seconds: When the players' track has no position at
+            a moment, a detection at most this far away in time is used.
+        min_flight_seconds: Least time between one player's hit and the
+            other's.
+        rehit_seconds: Least time between two hits by the same player
+            with no hit by the other seen in between.
+        max_return_seconds: Longest time after a hit in which the other
+            player's hit still counts as a return of it.
+        max_exchange_seconds: Two hits by one player no further apart than
+            this, with no hit by the other seen between them, mean the
+            other player's hit was missed; it is added, tagged inferred.
+        visit_gap_seconds: Events within reach of one player and no
+            further apart than this belong to one visit of the ball, in
+            which at most one is the hit.
+        min_hit_mps: How hard a kink near a player must be to be their
+            hit: the smaller of the change in the ball's image velocity
+            and the speed it leaves at, in metres per second at the
+            player's own distance.
+        ball_diameter_m: A tennis ball's diameter.
+        min_size_ratio: The ball's blob must look at least this many times
+            as wide as a ball at a player's distance would, to be within
+            that player's reach...
+        max_size_ratio: ...and at most this many times. On the real
+            recording a ball at the near player looked 0.9 to 1.9 times
+            the expected width and one at the far player 0.7 to 2.0,
+            while a far-court ball seen "at" the near player in the
+            picture looked 0.25 to 0.5 times it.
+        ground_level_m: A ball no more than this far above the far
+            player's feet in the image is on the ground in front of them.
+        bounce_sideways: Largest sideways change of image velocity, as a
+            fraction of the vertical change, a bounce may show.
+        bounce_reversal: A kink that reverses the ball's sideways image
+            motion, with more than this fraction of the vertical change on
+            both sides, is not a bounce.
+        bounce_min_keep: A ball leaving a bounce moves at least this
+            fraction as fast, in the image, as it arrived.
+        bounce_margin_m: How far outside the doubles court a bounce may
+            lie and still be reported (and called out).
+        pixel_sigma: Uncertainty of the ball's position at a bounce, as a
+            fraction of image width, before it is turned into metres.
+        bounce_floor_m: Uncertainty every bounce position carries however
+            fine the pixels are, added in quadrature: the frame at which
+            the path turns is not exactly the contact, and the ball's
+            centre is not on the ground. On the real recording near-end
+            bounces differed from the SwingVision sheet by a median 0.5m
+            where the pixels alone would allow 0.2m.
+        call_sigmas: A bounce is called in or out only when it is at
+            least this many uncertainties from the nearest line.
+        net_stop_ratio: A ball that keeps less than this fraction of its
+            image speed, in front of the net, has hit it.
+        net_pad: The net's outline is grown by this fraction of image
+            width for that test.
+        tape_pad: The net's white tape is grown by this fraction of image
+            width - about a ball's radius at that distance - when asking
+            whether a kink sits on it. A kink there is ignored.
+        min_net_approach_mps: Slowest a ball must have been moving for a
+            stop to count as hitting the net.
+        audio_window_seconds: A sharp sound this close to a hit's
+            estimated time (after allowing for its travel) is taken to be
+            that hit and confirms it.
+        audio_retime_seconds: Such a sound also replaces the hit's time
+            when the picture's own estimate is less certain than this.
+        audio_min_strength: Weakest sound onset used, in units of the
+            recording's 99th-percentile onset. Near-end hits on the real
+            recording were 0.8 to 3.0; far-end hits mostly 0.3 to 0.8,
+            no louder than footsteps and the neighbouring court.
+        audio_separation_seconds: Two onsets closer than this are one.
+        speed_of_sound_mps: Speed of sound.
+        max_speed_mph: An average shot speed above this is not reported.
+        min_speed_seconds: Shortest contact-to-bounce time a speed is
+            computed over.
+        inferred_confidence: Confidence given to a result concluded from
+            what happened next rather than seen.
+        court: Lines shots are judged against: "singles" or "doubles".
+    """
+
+    fit_seconds: float = 0.17
+    min_fit_points: int = 4
+    min_kink_mps: float = 4.5
+    min_kink_ratio: float = 0.35
+    kink_separation_seconds: float = 0.12
+    confusion_fraction: float = 0.9
+    max_junction_seconds: float = 0.25
+    max_lookback_seconds: float = 0.5
+    junction_miss: float = 0.02
+    junction_miss_seconds: float = 0.08
+    reach_m: float = 1.2
+    player_lookup_seconds: float = 1.0
+    min_flight_seconds: float = 0.3
+    rehit_seconds: float = 1.0
+    max_return_seconds: float = 3.5
+    max_exchange_seconds: float = 4.5
+    visit_gap_seconds: float = 1.0
+    min_hit_mps: float = 1.0
+    ball_diameter_m: float = 0.067
+    min_size_ratio: float = 0.7
+    max_size_ratio: float = 3.0
+    ground_level_m: float = 0.25
+    bounce_sideways: float = 0.8
+    bounce_reversal: float = 0.15
+    bounce_min_keep: float = 0.3
+    bounce_margin_m: float = 4.0
+    pixel_sigma: float = 0.001
+    bounce_floor_m: float = 0.3
+    call_sigmas: float = 1.0
+    net_stop_ratio: float = 0.3
+    net_pad: float = 0.004
+    tape_pad: float = 0.001
+    min_net_approach_mps: float = 3.0
+    audio_window_seconds: float = 0.06
+    audio_retime_seconds: float = 0.05
+    audio_min_strength: float = 1.0
+    audio_separation_seconds: float = 0.08
+    speed_of_sound_mps: float = 343.0
+    max_speed_mph: float = 160.0
+    min_speed_seconds: float = 0.1
+    inferred_confidence: float = 0.5
+    court: str = "singles"
+
+
+@dataclass(frozen=True)
+class StrokeConfig:
+    """Settings for naming each hit's stroke from the hitter's pose.
+
+    Attributes:
+        handedness: The hand each person plays with, "right" or "left",
+            as (person, hand) pairs for "A" - whoever was at the near end
+            when tracking began - and "B". **An assumption until intake
+            asks**: a wrong value swaps every forehand and backhand of
+            that player.
+        window_before: Pose is estimated on frames from this long before
+            a hit...
+        window_after: ...to this long after it. Mostly before: which side
+            the racket hand is on is read from the backswing and swing,
+            not the follow-through.
+        pose_frames: How many frames inside that window are looked at.
+        pose_size: Longest side, in pixels, the hitter's crop is scaled
+            to for the pose model.
+        crop_pad: The hitter's box is grown by this fraction of its size
+            before cropping, to take in the racket arm.
+        min_keypoint_confidence: A keypoint below this is treated as not
+            seen.
+        min_player_height: A hitter whose box is shorter than this
+            fraction of the image height is too small for pose to mean
+            anything; their strokes are judged without it. The far
+            player on the real recording is about 0.08 and pose there
+            was still usable.
+        serve_behind_m: A serve is hit from no further inside the
+            baseline than this.
+        serve_quiet_seconds: A serve follows at least this long with no
+            hit by the other player.
+        overhead_margin: Contact counts as overhead when the hitting
+            wrist is above the head by at least this fraction of the
+            shoulder-to-hip length - and as *not* overhead when the ball
+            was at least this fraction of the box's height below its top.
+        volley_line_m: A volley is hit from no further from the net than
+            the service line plus this.
+        side_margin: The hitting wrist (or the ball) must be this
+            fraction of the hitter's box height to one side of the body's
+            centre before a forehand or backhand is named.
+        min_confidence: A stroke scored below this is reported as
+            `unknown`.
+    """
+
+    handedness: tuple[tuple[str, str], ...] = (("A", "right"), ("B", "right"))
+    window_before: float = 0.3
+    window_after: float = 0.1
+    pose_frames: int = 6
+    pose_size: int = 320
+    crop_pad: float = 0.35
+    min_keypoint_confidence: float = 0.4
+    min_player_height: float = 0.05
+    serve_behind_m: float = 0.6
+    serve_quiet_seconds: float = 4.0
+    overhead_margin: float = 0.25
+    volley_line_m: float = 0.5
+    side_margin: float = 0.08
+    min_confidence: float = 0.4
+
+
+@dataclass(frozen=True)
 class TrackerConfig:
     """Everything the tracker is configured by, one field per stage.
 
@@ -487,6 +707,8 @@ class TrackerConfig:
         models: Learned-model choice and weight storage.
         players: Person detection, tracking and identity settings.
         ball: Ball candidate detection and track linking settings.
+        events: Hit, bounce, net and shot-result settings.
+        strokes: Stroke classification settings.
     """
 
     video: VideoConfig = field(default_factory=VideoConfig)
@@ -495,3 +717,5 @@ class TrackerConfig:
     models: ModelConfig = field(default_factory=ModelConfig)
     players: PlayerConfig = field(default_factory=PlayerConfig)
     ball: BallConfig = field(default_factory=BallConfig)
+    events: EventConfig = field(default_factory=EventConfig)
+    strokes: StrokeConfig = field(default_factory=StrokeConfig)

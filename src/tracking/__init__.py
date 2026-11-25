@@ -4,7 +4,9 @@ Built in phases (see docs). So far: reading a recording with real frame
 timestamps (`video`), finding the court and calibrating the image<->court
 homography (`court`, `calibrate`), provenance tags (`provenance`),
 following the two players (`players`), finding and linking the ball
-(`ball`), and lazy, version-pinned model loading (`models`).
+(`ball`), lazy, version-pinned model loading (`models`), reading hits,
+bounces, net contacts and shot results off the ball's track (`events`),
+and naming each hit's stroke (`strokes`).
 
 Importing this package loads no machine-learning library; see `models`.
 """
@@ -13,8 +15,10 @@ from .config import (
     BallConfig,
     CalibrationConfig,
     CourtConfig,
+    EventConfig,
     ModelConfig,
     PlayerConfig,
+    StrokeConfig,
     TrackerConfig,
     VideoConfig,
 )
@@ -24,9 +28,11 @@ __all__ = [
     "BallConfig",
     "CalibrationConfig",
     "CourtConfig",
+    "EventConfig",
     "ModelConfig",
     "PlayerConfig",
     "Provenance",
+    "StrokeConfig",
     "TrackerConfig",
     "VideoConfig",
 ]
